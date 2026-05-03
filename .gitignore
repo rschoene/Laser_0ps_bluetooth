@@ -1,7 +1,17 @@
+# Raw Bluetooth snoop captures (sensitive)
+**/btsnoop_hci.log
+
+# Device address inventory (sensitive)
+test_on_android/devices.md
+
 # Python bytecode
 __pycache__/
 *.py[cod]
 *.pyo
+
+# Packet captures (may contain sensitive metadata)
+*.pcap
+*.pcapng
 
 # Virtual environments
 .venv/

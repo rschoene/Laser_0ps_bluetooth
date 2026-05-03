@@ -2,14 +2,12 @@
 
 Reverse-engineering documentation and Python tooling for the **Hasbro NERF LaserOps** Bluetooth Low Energy (BLE) protocol, derived entirely from Android BLE HCI captures.
 
-## Project Goal
+## Project Goals
 
-Document the BLE protocol used by NERF LaserOps blasters and provide scripts to:
-
-- **Scan** for LaserOps devices nearby
-- **Assign** player level / name to a blaster
-- **Send** game-start commands
-- **Collect** end-of-game statistics
+- Document the observed BLE protocol between app and blaster(s).
+- Keep test runs reproducible and comparable across sessions.
+- Provide machine-readable protocol definitions usable in Python.
+- Provide Python scripts to scan, configure, and interact with blasters.
 
 All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro Android app (see `test_on_android/` for raw logs and analysis).
 
@@ -23,23 +21,45 @@ All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro 
 
 ```
 Laser_0ps_bluetooth/
-├── README.md                    ← This file
+├── README.md                         ← This file
 ├── LICENSE
+├── definition_protocol/
+│   ├── protocol_definition.json      ← Machine-readable protocol model
+│   ├── example_ble_protocol_client.py← BLE scanner/client example using Bleak
+│   └── README.md                     ← Usage instructions for the Python client
 ├── protocol/
-│   ├── README.md                ← ATT transport and message-type reference
-│   └── packets.md               ← Payload formats with raw observed examples
+│   ├── README.md                     ← ATT transport and message-type reference
+│   └── packets.md                    ← Payload formats with raw observed examples
 ├── scripts/
-│   ├── requirements.txt         ← Python dependency (bleak)
-│   ├── laserops.py              ← Core BLE library (handles, message builders/parsers)
-│   ├── scan.py                  ← Discover nearby LaserOps blasters
-│   ├── assign_device.py         ← Write level / name config to a blaster
-│   ├── start_game.py            ← Send game-start command sequence
-│   └── collect_stats.py         ← Retrieve end-of-game statistics
+│   ├── requirements.txt              ← Python dependency (bleak)
+│   ├── laserops.py                   ← Core BLE library (handles, message builders/parsers)
+│   ├── scan.py                       ← Discover nearby LaserOps blasters
+│   ├── assign_device.py              ← Write level / name config to a blaster
+│   ├── start_game.py                 ← Send game-start command sequence
+│   └── collect_stats.py              ← Retrieve end-of-game statistics
 └── test_on_android/
-    ├── test_definition.md       ← How captures were collected
-    ├── test_1/ … test_7/        ← Per-test notes and filtered HCI logs
+    ├── test_definition.md            ← Test plan definitions and capture instructions
+    ├── test_1/ … test_7/             ← Per-test notes and filtered HCI logs
     └── upgrades_powerups.md
 ```
+
+---
+
+## Current Protocol Status
+
+The protocol is reverse-engineered and still evolving.
+
+High-confidence items include:
+
+- Transport direction and handles:
+  - host writes typically on `0x0026`
+  - gun notifications typically on `0x0023`
+- Startup exchange (`35` query, `35...` snapshot, initial `5bxx` volume set).
+- Config/state writes (`36...`) and persistent level byte behavior.
+- Gameplay event families (`49`, `52` + `31xx`, `32xx`).
+- End-stat flow (`5a3f...`, `30013f...`, `3e0100`, `42`).
+
+See [`protocol/README.md`](protocol/README.md) for the ATT transport details and a summary of all known message types, [`protocol/packets.md`](protocol/packets.md) for payload formats with raw observed examples, and `test_on_android/test_1/traffic_definition.md` for detailed byte-level notes and confidence annotations.
 
 ---
 
@@ -57,36 +77,66 @@ cd scripts
 pip install -r requirements.txt
 ```
 
-### 1 — Scan for blasters
+### Scan for blasters
 
 ```bash
 python scan.py
 ```
 
-### 2 — Write level / name config to a blaster
+### Write level / name config to a blaster
 
 ```bash
-# Level 3, name parts at app-indices 17 and 19
-python assign_device.py --address E4:FE:7C:AA:11:22 --level 3 --name-a 17 --name-b 19
+# Level 3, name parts at observed byte values 0x17 and 0x19
+python assign_device.py --address E4:FE:7C:AA:11:22 --level 3 --name-a 23 --name-b 25
 ```
 
-### 3 — Send game-start command sequence
+### Send game-start command sequence
 
 ```bash
 python start_game.py --address E4:FE:7C:AA:11:22
 ```
 
-### 4 — Collect end-of-game statistics
+### Collect end-of-game statistics
 
 ```bash
 python collect_stats.py --address E4:FE:7C:AA:11:22 --output results.json
 ```
 
+### Run the low-level BLE example client
+
+```bash
+python definition_protocol/example_ble_protocol_client.py \
+    --address <gun_0_address> \
+    --pair \
+    --send-startup \
+    --startup-volume 0 \
+    --listen-seconds 60
+```
+
 ---
 
-## Protocol Overview
+## Data Privacy / Sanitization
 
-See [`protocol/README.md`](protocol/README.md) for the ATT transport details and a summary of all known message types, and [`protocol/packets.md`](protocol/packets.md) for payload formats with raw observed examples.
+This repository has been sanitized for public sharing:
+
+- Real device MAC addresses were replaced with stable fake values in all `filtered_.log` files.
+- Replacement map is documented in `test_on_android/devices.md` (git-ignored).
+- Raw Bluetooth snoop files (`btsnoop_hci.log`) are git-ignored.
+
+Current sanitized mapping labels used in docs and notes:
+
+- `phone_host`
+- `gun_0`
+- `gun_1`
+- `gun_2`
+- `gun_3`
+
+---
+
+## Limitations
+
+- Some field meanings are inferred and may change with new captures.
+- App/blaster firmware changes can shift payload families (for example `0x0a`-series to `0x0d`/`0x0e`-series after level 4+).
 
 ---
 
