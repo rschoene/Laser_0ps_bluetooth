@@ -1,17 +1,21 @@
 # Laser_0ps_bluetooth
 
-Reverse-engineering documentation and tooling for the **Hasbro NERF LaserOps** Bluetooth Low Energy (BLE) protocol.
+Reverse-engineering documentation and Python tooling for the **Hasbro NERF LaserOps** Bluetooth Low Energy (BLE) protocol, derived entirely from Android BLE HCI captures.
 
 ## Project Goal
 
-This project documents the BLE protocol used by the NERF LaserOps Pro blasters (AlphaPoint / Delta Burst) and provides Python scripts that allow you to:
+Document the BLE protocol used by NERF LaserOps blasters and provide scripts to:
 
 - **Scan** for LaserOps devices nearby
-- **Assign** player names, IDs, and team colours to blasters
-- **Start / stop** game sessions from a host machine (no phone required)
-- **Collect statistics** (shots fired, hits received, accuracy, …) at the end of a game
+- **Assign** player level / name to a blaster
+- **Send** game-start commands
+- **Collect** end-of-game statistics
 
-All findings are derived from passive BLE sniffing of the official Hasbro Android app together with active probing of GATT characteristics.
+All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro Android app (see `test_on_android/` for raw logs and analysis).
+
+> **Note:** Confidence levels for protocol fields vary.  
+> Fields marked *confirmed* appear consistently across multiple captures; fields marked *inferred* are consistent with observed traffic but their exact semantics are not yet proven.  
+> Treat inferred fields with caution and verify against new captures before relying on them.
 
 ---
 
@@ -19,18 +23,22 @@ All findings are derived from passive BLE sniffing of the official Hasbro Androi
 
 ```
 Laser_0ps_bluetooth/
-├── README.md               ← This file
+├── README.md                    ← This file
 ├── LICENSE
 ├── protocol/
-│   ├── README.md           ← BLE service / characteristic overview
-│   └── packets.md          ← Detailed packet-format reference
-└── scripts/
-    ├── requirements.txt    ← Python dependencies (bleak, …)
-    ├── laserops.py         ← Core BLE device library
-    ├── scan.py             ← Discover nearby LaserOps blasters
-    ├── assign_device.py    ← Set player name / ID / team on a blaster
-    ├── start_game.py       ← Start (and stop) a game session
-    └── collect_stats.py    ← Retrieve end-of-game statistics
+│   ├── README.md                ← ATT transport and message-type reference
+│   └── packets.md               ← Payload formats with raw observed examples
+├── scripts/
+│   ├── requirements.txt         ← Python dependency (bleak)
+│   ├── laserops.py              ← Core BLE library (handles, message builders/parsers)
+│   ├── scan.py                  ← Discover nearby LaserOps blasters
+│   ├── assign_device.py         ← Write level / name config to a blaster
+│   ├── start_game.py            ← Send game-start command sequence
+│   └── collect_stats.py         ← Retrieve end-of-game statistics
+└── test_on_android/
+    ├── test_definition.md       ← How captures were collected
+    ├── test_1/ … test_7/        ← Per-test notes and filtered HCI logs
+    └── upgrades_powerups.md
 ```
 
 ---
@@ -41,7 +49,6 @@ Laser_0ps_bluetooth/
 
 - Python 3.8 or newer
 - A Bluetooth 4.0+ adapter (Linux: BlueZ ≥ 5.43 recommended)
-- NERF LaserOps Pro blaster(s) in *pairing* mode (hold the power button until the LED flashes rapidly)
 
 ### Install dependencies
 
@@ -56,55 +63,40 @@ pip install -r requirements.txt
 python scan.py
 ```
 
-Sample output:
-
-```
-Scanning for LaserOps devices (10 s) …
-  [1]  LaserOps_Alpha   E4:FE:7C:AA:11:22   RSSI -62 dBm
-  [2]  LaserOps_Delta   E4:FE:7C:BB:33:44   RSSI -71 dBm
-Found 2 device(s).
-```
-
-### 2 — Assign player info
+### 2 — Write level / name config to a blaster
 
 ```bash
-python assign_device.py --address E4:FE:7C:AA:11:22 \
-                        --name "Player1" \
-                        --player-id 1 \
-                        --team 0
+# Level 3, name parts at app-indices 17 and 19
+python assign_device.py --address E4:FE:7C:AA:11:22 --level 3 --name-a 17 --name-b 19
 ```
 
-### 3 — Start a game
+### 3 — Send game-start command sequence
 
 ```bash
-# Start a 10-minute team deathmatch
-python start_game.py --addresses E4:FE:7C:AA:11:22 E4:FE:7C:BB:33:44 \
-                     --mode team_deathmatch \
-                     --duration 600
+python start_game.py --address E4:FE:7C:AA:11:22
 ```
 
-### 4 — Collect statistics
+### 4 — Collect end-of-game statistics
 
 ```bash
-python collect_stats.py --addresses E4:FE:7C:AA:11:22 E4:FE:7C:BB:33:44 \
-                        --output results.json
+python collect_stats.py --address E4:FE:7C:AA:11:22 --output results.json
 ```
 
 ---
 
 ## Protocol Overview
 
-See [`protocol/README.md`](protocol/README.md) for service / characteristic UUIDs and [`protocol/packets.md`](protocol/packets.md) for the full packet-format reference.
+See [`protocol/README.md`](protocol/README.md) for the ATT transport details and a summary of all known message types, and [`protocol/packets.md`](protocol/packets.md) for payload formats with raw observed examples.
 
 ---
 
 ## Contributing
 
-Contributions (additional packet captures, corrections, new scripts) are very welcome.  
+Contributions (additional HCI captures, corrections, clarifications) are welcome.  
 Please open an issue or a pull request.
 
 ---
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
+GNU General Public License v3.0 — see [LICENSE](LICENSE).

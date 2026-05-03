@@ -1,335 +1,320 @@
 """
-laserops.py — Core BLE library for NERF LaserOps Pro blasters.
+laserops.py — Core BLE library for NERF LaserOps blasters.
 
-Provides:
-  - Protocol constants (UUIDs, opcodes)
-  - Packet builder / parser helpers
-  - LaserOpsDevice: high-level async wrapper around a BLE connection
+Protocol knowledge is derived exclusively from Android BLE HCI captures.
+All semantics marked "inferred" are consistent with observed traffic but
+not yet proven; treat them as tentative.
+
+Transport:
+  - Write to ATT handle 0x0026 (Write Command, ATT opcode 0x52)
+  - Receive notifications from ATT handle 0x0023 (Handle Value Notification)
+  - One-time setup write on ATT handle 0x0024 (Write Request) to enable notifications
 """
 
 from __future__ import annotations
 
 import asyncio
-import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
 # ---------------------------------------------------------------------------
-# Advertisement / device discovery
+# ATT handle constants (confirmed from captures)
 # ---------------------------------------------------------------------------
 
-DEVICE_NAME_PREFIXES = ("LaserOps_Alpha", "LaserOps_Delta", "LaserOps")
+NOTIFY_HANDLE = 0x0023  # gun → host notifications
+WRITE_HANDLE  = 0x0026  # host → gun write commands
+SETUP_HANDLE  = 0x0024  # one-time setup write (enables notifications)
 
 # ---------------------------------------------------------------------------
-# GATT UUIDs
+# Message ID bytes (leading byte of each payload family)
 # ---------------------------------------------------------------------------
 
-SERVICE_DEVICE_INFO = "0000180a-0000-1000-8000-00805f9b34fb"
+# Startup exchange (confirmed)
+MSG_STARTUP_QUERY    = 0x35   # host → gun: 1 byte
+MSG_STARTUP_SNAPSHOT = 0x35   # gun → host: 13 bytes
 
-SERVICE_CONTROL = "0000aa00-0000-1000-8000-00805f9b34fb"
-CHAR_COMMAND    = "0000aa01-0000-1000-8000-00805f9b34fb"  # Write
-CHAR_STATUS     = "0000aa02-0000-1000-8000-00805f9b34fb"  # Notify
-CHAR_PLAYER_CFG = "0000aa03-0000-1000-8000-00805f9b34fb"  # Read/Write
-CHAR_GAME_CFG   = "0000aa04-0000-1000-8000-00805f9b34fb"  # Read/Write
+# Config write (confirmed structure)
+MSG_CONFIG_WRITE     = 0x36   # host → gun: 13 bytes
+MSG_APPLY_COMMIT     = 0x57   # host → gun: 1 byte (inferred meaning)
 
-SERVICE_STATS   = "0000bb00-0000-1000-8000-00805f9b34fb"
-CHAR_STATS      = "0000bb01-0000-1000-8000-00805f9b34fb"  # Read/Notify
-CHAR_HISTORY    = "0000bb02-0000-1000-8000-00805f9b34fb"  # Read
+# Volume control (confirmed)
+MSG_VOLUME_SET       = 0x5B   # host → gun: 2 bytes, XX = 0x00–0x1f
 
-# ---------------------------------------------------------------------------
-# Opcodes — commands (host → blaster)
-# ---------------------------------------------------------------------------
+# Status poll/reply (high confidence)
+MSG_STATUS_POLL      = 0x51   # host → gun: 1 byte
+MSG_STATUS_REPLY     = 0x51   # gun → host: 3 bytes
 
-CMD_HELLO      = 0x01
-CMD_SET_PLAYER = 0x10
-CMD_GET_PLAYER = 0x11
-CMD_SET_GAME   = 0x20
-CMD_START_GAME = 0x21
-CMD_STOP_GAME  = 0x22
-CMD_GET_STATS  = 0x30
-CMD_RESET      = 0xF0
+# Gameplay events (gun → host, confirmed)
+MSG_TRIGGER          = 0x49   # 1 byte
+MSG_RELOAD_A         = 0x52   # 1 byte, paired with reload_B ~0.5 s later
+MSG_RELOAD_B_OLD     = 0x31   # 2 bytes: 31 0a (older mode)
+MSG_RELOAD_B_NEW     = 0x31   # 2 bytes: 31 0d (newer/level-5 mode)
+MSG_AMMO_STATE       = 0x32   # variable, per-shot counter update
 
-# Opcodes — events (blaster → host)
-EVT_HELLO      = 0x81
-EVT_PLAYER_CFG = 0x91
-EVT_HIT        = 0xA0
-EVT_SHOT_FIRED = 0xA1
-EVT_ELIMINATED = 0xA2
-EVT_RESPAWN    = 0xA3
-EVT_GAME_END   = 0xB0
-EVT_STATS      = 0xC0
+# In-game control (host → gun, medium confidence)
+MSG_GAME_CTRL        = 0x37   # 4 bytes
 
-PACKET_MAGIC = 0x4C  # 'L'
+# End-of-game stats (inferred semantics)
+MSG_STAT_REQUEST     = 0x5A   # host → gun: 6 bytes, prefix 5a3f01
+MSG_STAT_COUNTER     = 0x30   # gun → host: 5 bytes, prefix 30013f
+MSG_STAT_TERMINAL    = 0x3E   # gun → host: 3e0100
+
+# Session close (low-medium confidence)
+MSG_SESSION_CLOSE    = 0x42   # host → gun: 1 byte
 
 # ---------------------------------------------------------------------------
-# Game mode constants
+# Volume constants (confirmed)
 # ---------------------------------------------------------------------------
 
-GAME_MODE_FFA              = 0
-GAME_MODE_TEAM_DEATHMATCH  = 1
-GAME_MODE_CAPTURE_THE_FLAG = 2
-GAME_MODE_SURVIVAL         = 3
-
-GAME_MODE_NAMES = {
-    "ffa":               GAME_MODE_FFA,
-    "team_deathmatch":   GAME_MODE_TEAM_DEATHMATCH,
-    "capture_the_flag":  GAME_MODE_CAPTURE_THE_FLAG,
-    "survival":          GAME_MODE_SURVIVAL,
-}
+VOLUME_MIN = 0x00  # mute
+VOLUME_MAX = 0x1F  # 31 decimal
 
 # ---------------------------------------------------------------------------
-# Packet helpers
+# Data classes for decoded gun→host messages
 # ---------------------------------------------------------------------------
 
-def _checksum(data: bytes) -> int:
-    """XOR checksum over all bytes."""
-    result = 0
-    for b in data:
-        result ^= b
-    return result
-
-
-def build_packet(opcode: int, payload: bytes = b"") -> bytes:
-    """Build a framed LaserOps command packet."""
-    header = bytes([PACKET_MAGIC, opcode, len(payload)])
-    cs = _checksum(header + payload)
-    return header + payload + bytes([cs])
-
-
-def parse_packet(data: bytes) -> tuple[int, bytes]:
+@dataclass
+class StartupSnapshot:
     """
-    Parse a raw notification into (opcode, payload).
+    Decoded gun startup snapshot (message id 0x35, 13 bytes).
 
-    Raises ValueError if the packet is malformed or has a bad checksum.
+    Fields confirmed: raw bytes 8–10 contain level + two name-part bytes.
+    Exact field names are inferred.
     """
-    if len(data) < 4:
-        raise ValueError(f"Packet too short: {data.hex()}")
-    if data[0] != PACKET_MAGIC:
-        raise ValueError(f"Bad magic byte: 0x{data[0]:02X}")
-    opcode = data[1]
-    length = data[2]
-    if len(data) != length + 4:
-        raise ValueError(
-            f"Length mismatch: header says {length} payload bytes "
-            f"but got {len(data) - 4}"
+    level: int       # byte 8  — persistent gun level (high confidence)
+    name_a: int      # byte 9  — name part A (inferred)
+    name_b: int      # byte 10 — name part B (inferred)
+    raw: bytes       # full 13-byte payload for reference
+
+
+@dataclass
+class StatusReply:
+    """Gun status reply (message id 0x51, 3 bytes).  Semantics inferred."""
+    status_word: int   # bytes 1–2 as big-endian uint16 (drifts over time)
+    raw: bytes
+
+
+@dataclass
+class StatCounterReply:
+    """End-of-game stat counter (prefix 30013f, 5 bytes).  Semantics inferred."""
+    stat_type: int   # byte 3 — matches the TT byte from the request
+    counter: int     # byte 4 — descends to 00
+
+
+# ---------------------------------------------------------------------------
+# Message decoders
+# ---------------------------------------------------------------------------
+
+def decode_startup_snapshot(payload: bytes) -> Optional[StartupSnapshot]:
+    """
+    Decode a gun→host notification as a startup snapshot if it matches.
+
+    Returns None if the payload does not have the expected 13-byte structure.
+    """
+    if len(payload) != 13 or payload[0] != MSG_STARTUP_SNAPSHOT:
+        return None
+    return StartupSnapshot(
+        level=payload[8],
+        name_a=payload[9],
+        name_b=payload[10],
+        raw=bytes(payload),
+    )
+
+
+def decode_status_reply(payload: bytes) -> Optional[StatusReply]:
+    """Decode a 3-byte status reply notification."""
+    if len(payload) != 3 or payload[0] != MSG_STATUS_REPLY:
+        return None
+    status_word = (payload[1] << 8) | payload[2]
+    return StatusReply(status_word=status_word, raw=bytes(payload))
+
+
+def decode_stat_counter(payload: bytes) -> Optional[StatCounterReply]:
+    """Decode a 5-byte end-of-game stat counter notification (prefix 30 01 3f)."""
+    if len(payload) != 5 or payload[:3] != bytes([0x30, 0x01, 0x3F]):
+        return None
+    return StatCounterReply(stat_type=payload[3], counter=payload[4])
+
+
+def decode_notification(payload: bytes) -> str:
+    """Human-readable decoding of any known gun→host notification payload."""
+    h = payload.hex()
+
+    snapshot = decode_startup_snapshot(payload)
+    if snapshot is not None:
+        return (
+            f"startup_snapshot level={snapshot.level} "
+            f"name_parts=(0x{snapshot.name_a:02x}, 0x{snapshot.name_b:02x}) "
+            f"raw={h}"
         )
-    payload = data[3 : 3 + length]
-    expected_cs = _checksum(data[:-1])
-    if data[-1] != expected_cs:
-        raise ValueError(
-            f"Checksum mismatch: got 0x{data[-1]:02X}, expected 0x{expected_cs:02X}"
-        )
-    return opcode, payload
 
+    status = decode_status_reply(payload)
+    if status is not None:
+        return f"status_reply 0x{status.status_word:04x} raw={h}"
 
-# ---------------------------------------------------------------------------
-# Data classes for parsed events
-# ---------------------------------------------------------------------------
+    if h == "49":
+        return "trigger_event"
 
-@dataclass
-class HelloInfo:
-    device_nonce: int
-    firmware_version: str  # e.g. "1.2.0"
-    battery_pct: int
+    if h == "52":
+        return "reload_marker_a"
 
+    if h in ("310a", "310d"):
+        return f"reload_marker_b variant=0x{payload[1]:02x} raw={h}"
 
-@dataclass
-class PlayerConfig:
-    player_id: int
-    team_id: int
-    name: str
+    if payload[0:1] == b"\x32" and len(payload) >= 2:
+        return f"ammo_state family=0x{payload[1]:02x} counter=0x{payload[-1]:02x} raw={h}"
 
+    stat = decode_stat_counter(payload)
+    if stat is not None:
+        return f"stat_counter type=0x{stat.stat_type:02x} value=0x{stat.counter:02x} raw={h}"
 
-@dataclass
-class HitEvent:
-    shooter_id: int
-    shooter_team: int
-    damage: int
-    health_left: int
+    if h == "3e0100":
+        return "stat_terminal (end-of-game stats complete)"
 
-
-@dataclass
-class GameEndEvent:
-    reason: int     # 0=time_up, 1=stopped, 2=winner
-    winner_id: int
-    winner_team: int
-
-
-@dataclass
-class GameStats:
-    player_id: int
-    shots_fired: int
-    hits_received: int
-    hits_scored: int
-    eliminations: int
-    deaths: int
-    game_duration_s: int
-    accuracy_pct: int
-
-    def to_dict(self) -> dict:
-        return {
-            "player_id":      self.player_id,
-            "shots_fired":    self.shots_fired,
-            "hits_received":  self.hits_received,
-            "hits_scored":    self.hits_scored,
-            "eliminations":   self.eliminations,
-            "deaths":         self.deaths,
-            "game_duration_s":self.game_duration_s,
-            "accuracy_pct":   self.accuracy_pct,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Event parsers
-# ---------------------------------------------------------------------------
-
-def parse_hello(payload: bytes) -> HelloInfo:
-    if len(payload) < 7:
-        raise ValueError("EVT_HELLO payload too short")
-    device_nonce = struct.unpack_from("<I", payload, 0)[0]
-    fw_bcd = struct.unpack_from("<H", payload, 4)[0]
-    fw_str = f"{(fw_bcd >> 8) & 0xFF}.{(fw_bcd >> 4) & 0xF}.{fw_bcd & 0xF}"
-    battery_pct = payload[6]
-    return HelloInfo(device_nonce=device_nonce, firmware_version=fw_str,
-                     battery_pct=battery_pct)
-
-
-def parse_player_cfg(payload: bytes) -> PlayerConfig:
-    if len(payload) < 3:
-        raise ValueError("EVT_PLAYER_CFG payload too short")
-    player_id = payload[0]
-    team_id   = payload[1]
-    name_len  = payload[2]
-    name      = payload[3 : 3 + name_len].decode("utf-8", errors="replace")
-    return PlayerConfig(player_id=player_id, team_id=team_id, name=name)
-
-
-def parse_hit(payload: bytes) -> HitEvent:
-    if len(payload) < 4:
-        raise ValueError("EVT_HIT payload too short")
-    return HitEvent(
-        shooter_id=payload[0],
-        shooter_team=payload[1],
-        damage=payload[2],
-        health_left=payload[3],
-    )
-
-
-def parse_game_end(payload: bytes) -> GameEndEvent:
-    if len(payload) < 3:
-        raise ValueError("EVT_GAME_END payload too short")
-    return GameEndEvent(reason=payload[0], winner_id=payload[1],
-                        winner_team=payload[2])
-
-
-def parse_stats(payload: bytes) -> GameStats:
-    if len(payload) < 14:
-        raise ValueError("EVT_STATS payload too short")
-    (player_id, shots_fired, hits_received, hits_scored,
-     eliminations, deaths, game_duration_s, accuracy_pct) = struct.unpack_from(
-        "<BHHHHHHB", payload, 0
-    )
-    return GameStats(
-        player_id=player_id,
-        shots_fired=shots_fired,
-        hits_received=hits_received,
-        hits_scored=hits_scored,
-        eliminations=eliminations,
-        deaths=deaths,
-        game_duration_s=game_duration_s,
-        accuracy_pct=accuracy_pct,
-    )
+    return f"unknown raw={h}"
 
 
 # ---------------------------------------------------------------------------
 # Command builders
 # ---------------------------------------------------------------------------
 
-def cmd_hello(host_nonce: int) -> bytes:
-    payload = struct.pack("<I", host_nonce)
-    return build_packet(CMD_HELLO, payload)
+def build_startup_query() -> bytes:
+    """Single-byte startup query sent to the gun at session start."""
+    return bytes([MSG_STARTUP_QUERY])
 
 
-def cmd_set_player(player_id: int, team_id: int, name: str) -> bytes:
-    name_bytes = name.encode("utf-8")[:12]
-    payload = bytes([player_id, team_id, len(name_bytes)]) + name_bytes
-    return build_packet(CMD_SET_PLAYER, payload)
+def build_config_write(level: int, name_a: int, name_b: int) -> bytes:
+    """
+    Build a 13-byte config write payload (form A, host → gun).
+
+    Observed in Test 1 when assigning level and name parts to guns.
+    ``name_a`` and ``name_b`` are the raw byte values for bytes 9 and 10
+    of the payload.  Based on captures, these appear to be (app_name_index + 1)
+    for each of the two name words, but this relationship is inferred.
+
+    Returns form A: 36 00 0a 02 02 03 00 0a LL NN MM 00 04
+    """
+    return bytes([
+        MSG_CONFIG_WRITE, 0x00, 0x0A, 0x02, 0x02,
+        0x03, 0x00, 0x0A,
+        level & 0xFF, name_a & 0xFF, name_b & 0xFF,
+        0x00, 0x04,
+    ])
 
 
-def cmd_get_player() -> bytes:
-    return build_packet(CMD_GET_PLAYER)
+def build_apply_commit() -> bytes:
+    """Single-byte apply/commit command (inferred meaning)."""
+    return bytes([MSG_APPLY_COMMIT])
 
 
-def cmd_set_game(
-    mode: int,
-    duration_s: int,
-    lives: int,
-    respawn_s: int,
-    friendly_fire: bool,
-) -> bytes:
-    payload = struct.pack("<BHBBB", mode, duration_s, lives, respawn_s,
-                          int(friendly_fire))
-    return build_packet(CMD_SET_GAME, payload)
+def build_volume_set(volume: int) -> bytes:
+    """
+    Build a 2-byte volume-set command.
+
+    ``volume`` must be 0 (mute) to 31 (max).  Values outside this range
+    are clamped.  Confirmed by Test 4 sweep data.
+    """
+    v = max(VOLUME_MIN, min(VOLUME_MAX, volume))
+    return bytes([MSG_VOLUME_SET, v])
 
 
-def cmd_start_game() -> bytes:
-    return build_packet(CMD_START_GAME)
+def build_status_poll() -> bytes:
+    """Single-byte periodic status poll."""
+    return bytes([MSG_STATUS_POLL])
 
 
-def cmd_stop_game() -> bytes:
-    return build_packet(CMD_STOP_GAME)
+def build_stat_request(stat_type: int) -> bytes:
+    """
+    Build a 6-byte end-of-game stat request.
+
+    Observed ``stat_type`` values from captures: 0x01, 0x02, 0x06.
+    Semantics of each type are inferred.
+    """
+    return bytes([0x5A, 0x3F, 0x01, stat_type & 0xFF, 0x00, 0x00])
 
 
-def cmd_get_stats() -> bytes:
-    return build_packet(CMD_GET_STATS)
+def build_session_close() -> bytes:
+    """Single-byte session close command (low-medium confidence)."""
+    return bytes([MSG_SESSION_CLOSE])
 
 
-def cmd_reset() -> bytes:
-    return build_packet(CMD_RESET)
+# ---------------------------------------------------------------------------
+# Handle resolver (mirrors the approach in definition_protocol/example_ble_protocol_client.py)
+# ---------------------------------------------------------------------------
+
+def find_char_by_handle(client: BleakClient, handle: int):
+    """Return the GATT characteristic whose ATT handle matches ``handle``."""
+    if client.services is None:
+        return None
+    for service in client.services:
+        for char in service.characteristics:
+            if char.handle == handle:
+                return char
+    return None
 
 
 # ---------------------------------------------------------------------------
 # High-level device class
 # ---------------------------------------------------------------------------
 
-EventCallback = Callable[[int, bytes], None]
+NotificationCallback = Callable[[bytes], None]
 
 
 class LaserOpsDevice:
     """
-    Async context manager representing a connection to a single LaserOps blaster.
+    Async context manager representing a BLE connection to a LaserOps blaster.
+
+    The protocol uses two ATT handles:
+      - 0x0023 for gun→host notifications
+      - 0x0026 for host→gun write commands
 
     Usage::
 
         async with LaserOpsDevice(ble_device) as gun:
-            await gun.handshake()
-            await gun.set_player(player_id=1, team_id=0, name="Player1")
-            ...
+            snapshot = await gun.startup()
+            print(f"Level: {snapshot.level}")
+            await gun.set_volume(0)
     """
 
     def __init__(
         self,
         device: BLEDevice,
-        event_callback: Optional[EventCallback] = None,
+        notification_callback: Optional[NotificationCallback] = None,
     ) -> None:
         self._device = device
         self._client = BleakClient(device)
-        self._event_callback = event_callback
-        self._pending: dict[int, asyncio.Future] = {}
+        self._notification_callback = notification_callback
+        self._pending: dict[bytes, asyncio.Future] = {}
+        self._notify_char = None
+        self._write_char = None
 
     # ---- context manager --------------------------------------------------
 
     async def __aenter__(self) -> "LaserOpsDevice":
         await self._client.connect()
-        await self._client.start_notify(CHAR_STATUS, self._on_notification)
+
+        self._notify_char = find_char_by_handle(self._client, NOTIFY_HANDLE)
+        self._write_char  = find_char_by_handle(self._client, WRITE_HANDLE)
+
+        if self._notify_char is None:
+            raise RuntimeError(
+                f"Notify characteristic (handle 0x{NOTIFY_HANDLE:04x}) not found"
+            )
+        if self._write_char is None:
+            raise RuntimeError(
+                f"Write characteristic (handle 0x{WRITE_HANDLE:04x}) not found"
+            )
+
+        await self._client.start_notify(self._notify_char, self._on_notification)
         return self
 
     async def __aexit__(self, *_) -> None:
         try:
-            await self._client.stop_notify(CHAR_STATUS)
+            if self._notify_char is not None:
+                await self._client.stop_notify(self._notify_char)
         except Exception:
             pass
         await self._client.disconnect()
@@ -337,32 +322,35 @@ class LaserOpsDevice:
     # ---- internals --------------------------------------------------------
 
     def _on_notification(self, _handle: int, data: bytearray) -> None:
-        try:
-            opcode, payload = parse_packet(bytes(data))
-        except ValueError:
-            return
-        # Resolve any waiting futures
-        fut = self._pending.pop(opcode, None)
-        if fut is not None and not fut.done():
-            fut.set_result(payload)
-        # Call user callback
-        if self._event_callback:
-            self._event_callback(opcode, payload)
+        payload = bytes(data)
 
-    async def _send(self, packet: bytes) -> None:
-        await self._client.write_gatt_char(CHAR_COMMAND, packet,
-                                           response=True)
+        # Resolve any waiting futures keyed on payload prefix
+        prefix = payload[:3] if len(payload) >= 3 else payload
+        for key in list(self._pending.keys()):
+            if payload[:len(key)] == key:
+                fut = self._pending.pop(key)
+                if not fut.done():
+                    fut.set_result(payload)
+                break
 
-    async def _send_and_wait(
+        if self._notification_callback:
+            self._notification_callback(payload)
+
+    async def _write(self, data: bytes) -> None:
+        await self._client.write_gatt_char(
+            self._write_char, data, response=False
+        )
+
+    async def _write_and_wait(
         self,
-        packet: bytes,
-        response_opcode: int,
+        data: bytes,
+        response_prefix: bytes,
         timeout: float = 5.0,
     ) -> bytes:
         loop = asyncio.get_event_loop()
         fut: asyncio.Future[bytes] = loop.create_future()
-        self._pending[response_opcode] = fut
-        await self._send(packet)
+        self._pending[response_prefix] = fut
+        await self._write(data)
         return await asyncio.wait_for(fut, timeout=timeout)
 
     # ---- public API -------------------------------------------------------
@@ -375,64 +363,124 @@ class LaserOpsDevice:
     def name(self) -> str:
         return self._device.name or self._device.address
 
-    async def handshake(self) -> HelloInfo:
-        """Exchange nonces and retrieve firmware version / battery level."""
-        import random
-        nonce = random.getrandbits(32)
-        payload = await self._send_and_wait(cmd_hello(nonce), EVT_HELLO)
-        return parse_hello(payload)
+    async def startup(self, volume: int = VOLUME_MAX) -> StartupSnapshot:
+        """
+        Perform the confirmed startup exchange:
+          1. Send startup query (0x35)
+          2. Wait for startup snapshot (0x35 ... 13 bytes)
+          3. Send initial volume (0x5b XX)
 
-    async def set_player(
-        self, player_id: int, team_id: int = 0, name: str = ""
+        Returns the decoded StartupSnapshot.
+        """
+        response = await self._write_and_wait(
+            build_startup_query(),
+            response_prefix=bytes([MSG_STARTUP_SNAPSHOT]),
+            timeout=5.0,
+        )
+        snapshot = decode_startup_snapshot(response)
+        if snapshot is None:
+            raise RuntimeError(
+                f"Unexpected startup response: {response.hex()}"
+            )
+        await self._write(build_volume_set(volume))
+        return snapshot
+
+    async def write_config(
+        self, level: int, name_a: int, name_b: int
     ) -> None:
-        """Set player identity on the blaster."""
-        await self._send(cmd_set_player(player_id, team_id, name))
+        """
+        Write level and name configuration to the gun (form A config write + apply).
 
-    async def get_player(self) -> PlayerConfig:
-        """Retrieve current player configuration from the blaster."""
-        payload = await self._send_and_wait(cmd_get_player(), EVT_PLAYER_CFG)
-        return parse_player_cfg(payload)
+        ``name_a`` and ``name_b`` are the raw byte values to embed in the
+        config-write payload (bytes 9 and 10).  Based on capture evidence,
+        these appear to equal (app_name_index + 1) for each selected name
+        word, but this relationship is inferred.
+        """
+        await self._write(build_config_write(level, name_a, name_b))
+        await self._write(build_apply_commit())
 
-    async def set_game(
-        self,
-        mode: int = GAME_MODE_FFA,
-        duration_s: int = 0,
-        lives: int = 0,
-        respawn_s: int = 5,
-        friendly_fire: bool = False,
-    ) -> None:
-        """Configure game parameters."""
-        await self._send(
-            cmd_set_game(mode, duration_s, lives, respawn_s, friendly_fire)
+    async def set_volume(self, volume: int) -> None:
+        """Set gun volume (0 = mute, 31 = max).  Confirmed by Test 4."""
+        await self._write(build_volume_set(volume))
+
+    async def poll_status(self) -> bytes:
+        """Send a status poll and return the raw 3-byte status reply."""
+        return await self._write_and_wait(
+            build_status_poll(),
+            response_prefix=bytes([MSG_STATUS_REPLY, ]),
+            timeout=5.0,
         )
 
-    async def start_game(self) -> None:
-        """Start the configured game."""
-        await self._send(cmd_start_game())
+    async def collect_stats(
+        self,
+        stat_types: tuple[int, ...] = (0x01, 0x02, 0x06),
+        per_type_timeout: float = 5.0,
+    ) -> list[list[StatCounterReply]]:
+        """
+        Request end-of-game statistics for each stat type and collect replies.
 
-    async def stop_game(self) -> None:
-        """Stop the current game."""
-        await self._send(cmd_stop_game())
+        Sends ``5a3f01 TT 0000`` for each TT in ``stat_types``, then
+        collects ``30013f TT NN`` replies until the terminal marker (3e0100)
+        is seen or a timeout elapses.
 
-    async def get_stats(self) -> GameStats:
-        """Retrieve end-of-game statistics."""
-        payload = await self._send_and_wait(cmd_get_stats(), EVT_STATS)
-        return parse_stats(payload)
+        Returns a list of lists (one per stat_type) of StatCounterReply objects.
+        """
+        results: list[list[StatCounterReply]] = []
+        terminal = bytes([0x3E, 0x01, 0x00])
 
-    async def reset(self) -> None:
-        """Soft-reset the blaster."""
-        await self._send(cmd_reset())
+        for stat_type in stat_types:
+            replies: list[StatCounterReply] = []
+            done = asyncio.Event()
+
+            original_cb = self._notification_callback
+
+            def _cb(payload: bytes) -> None:
+                sc = decode_stat_counter(payload)
+                if sc is not None and sc.stat_type == stat_type:
+                    replies.append(sc)
+                if payload == terminal:
+                    done.set()
+                if original_cb:
+                    original_cb(payload)
+
+            self._notification_callback = _cb
+            try:
+                await self._write(build_stat_request(stat_type))
+                try:
+                    await asyncio.wait_for(done.wait(), timeout=per_type_timeout)
+                except asyncio.TimeoutError:
+                    pass
+            finally:
+                self._notification_callback = original_cb
+
+            results.append(replies)
+
+        return results
+
+    async def close_session(self) -> None:
+        """Send the session-close command (0x42, low-medium confidence)."""
+        await self._write(build_session_close())
 
 
 # ---------------------------------------------------------------------------
 # Discovery helper
 # ---------------------------------------------------------------------------
 
-async def scan_for_devices(timeout: float = 10.0) -> list[BLEDevice]:
-    """Return a list of LaserOps BLE devices visible nearby."""
+async def scan_for_devices(
+    timeout: float = 10.0,
+    name_contains: str = "laser",
+) -> list[BLEDevice]:
+    """
+    Return BLE devices whose advertisement name contains ``name_contains``
+    (case-insensitive).
+
+    The official app uses "laser" as the search term in its own scan logic.
+    The exact advertisement name format is not confirmed from captures.
+    """
     devices = await BleakScanner.discover(timeout=timeout)
-    results = []
-    for d in devices:
-        if d.name and any(d.name.startswith(p) for p in DEVICE_NAME_PREFIXES):
-            results.append(d)
-    return results
+    needle = name_contains.lower()
+    return [
+        d for d in devices
+        if d.name and needle in d.name.lower()
+    ]
+

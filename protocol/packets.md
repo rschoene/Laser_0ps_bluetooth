@@ -1,207 +1,293 @@
-# LaserOps BLE Protocol — Packet Format Reference
+# LaserOps BLE Protocol — Observed Payload Reference
 
-All packets are exchanged via the **Command** (`0xAA01`) and **Status/Event** (`0xAA02`) characteristics of the LaserOps Control Service.  All multi-byte integers are **little-endian**.
+This page lists raw payload examples taken directly from Android BLE HCI captures.  Every example shown is a verbatim value seen in at least one capture session.
+
+Confidence markers: **confirmed** = observed consistently; **inferred** = consistent but not proven; **medium/low** = tentative.
 
 ---
 
-## General Packet Structure
+## Transport Summary
+
+All payloads are flat byte sequences — there is no common framing header across message types.  Each message type is identified by its leading byte(s).
+
+- **Host → gun**: ATT Write Command (`0x52`) to handle `0x0026`
+- **Gun → host**: ATT Handle Value Notification (`0x1b`) from handle `0x0023`
+
+---
+
+## Startup Exchange
+
+### Host sends startup query
 
 ```
- 0         1         2         3 … N-2     N-1
-┌─────────┬─────────┬─────────┬──────────┬─────────┐
-│  MAGIC  │  OPCODE │  LENGTH │ PAYLOAD  │ CHECKSUM│
-│  0x4C   │  1 byte │  1 byte │ N-3 bytes│  1 byte │
-└─────────┴─────────┴─────────┴──────────┴─────────┘
+35
 ```
 
-| Field    | Size   | Description                                                         |
-|----------|--------|---------------------------------------------------------------------|
-| MAGIC    | 1 byte | Always `0x4C` (`'L'` for LaserOps)                                 |
-| OPCODE   | 1 byte | Command / event identifier (see tables below)                       |
-| LENGTH   | 1 byte | Number of bytes in PAYLOAD (0–252)                                  |
-| PAYLOAD  | N bytes| Opcode-specific data                                                |
-| CHECKSUM | 1 byte | XOR of all preceding bytes (MAGIC ^ OPCODE ^ LENGTH ^ all PAYLOAD) |
+Length: 1 byte.  **Confidence: confirmed**.
 
 ---
 
-## Command Opcodes (host → blaster, written to `0xAA01`)
+### Gun replies with startup snapshot
 
-### `CMD_HELLO` — `0x01`
+```
+35 00 0a 02 02 01 00 0a  LL  NN  MM  00  0a
+```
 
-Sent immediately after connecting.  Exchanges a session nonce used for lightweight integrity checking.
+Length: 13 bytes.  **Confidence: confirmed structure; field names inferred**.
 
-| Offset | Size | Field        | Description                        |
-|--------|------|--------------|------------------------------------|
-| 0      | 4    | host_nonce   | Random 32-bit value chosen by host |
+Observed examples (Test 1 — four guns):
 
-Response: `EVT_HELLO` (see below).
+```
+35 00 0a 02 02 01 00 0a  03  17  32  00  0a   ← gun 0, level 3
+35 00 0a 02 02 01 00 0a  02  0f  0f  00  0a   ← gun 1, level 2
+35 00 0a 02 02 01 00 0a  00  00  00  00  0a   ← gun 2, unnamed
+35 00 0a 02 02 01 00 0a  02  32  31  00  0a   ← gun 3, level 2
+```
 
----
+Test 6 (gun 0 after reaching level 4):
 
-### `CMD_SET_PLAYER` — `0x10`
-
-Configure player identity on the blaster.
-
-| Offset | Size | Field       | Description                                    |
-|--------|------|-------------|------------------------------------------------|
-| 0      | 1    | player_id   | 1–8 (unique per game)                          |
-| 1      | 1    | team_id     | 0 = free-for-all, 1 = red team, 2 = blue team  |
-| 2      | 1    | name_len    | Length of UTF-8 name string (max 12 bytes)     |
-| 3      | 1–12 | name        | Player name (UTF-8, **not** NUL-terminated)    |
-
----
-
-### `CMD_GET_PLAYER` — `0x11`
-
-Request current player configuration.  No payload.  Response: `EVT_PLAYER_CFG`.
-
----
-
-### `CMD_SET_GAME` — `0x20`
-
-Configure game parameters.
-
-| Offset | Size | Field        | Description                                              |
-|--------|------|--------------|----------------------------------------------------------|
-| 0      | 1    | game_mode    | 0=FFA, 1=Team Deathmatch, 2=Capture the Flag, 3=Survival |
-| 1      | 2    | duration_s   | Game duration in seconds (0 = unlimited)                  |
-| 3      | 1    | lives        | Lives per player (0 = unlimited)                         |
-| 4      | 1    | respawn_s    | Respawn delay in seconds                                 |
-| 5      | 1    | friendly_fire| 0 = disabled, 1 = enabled                                |
-
----
-
-### `CMD_START_GAME` — `0x21`
-
-Start the configured game.  All connected blasters must have received `CMD_SET_PLAYER` and `CMD_SET_GAME` first.  No payload.
-
----
-
-### `CMD_STOP_GAME` — `0x22`
-
-Immediately end the current game.  No payload.  Triggers `EVT_GAME_END` on all blasters.
-
----
-
-### `CMD_GET_STATS` — `0x30`
-
-Request end-of-game statistics.  No payload.  Response: `EVT_STATS`.
-
----
-
-### `CMD_RESET` — `0xF0`
-
-Soft-reset the blaster (returns to idle/advertising state).  No payload.
-
----
-
-## Event Opcodes (blaster → host, received on `0xAA02` notifications)
-
-### `EVT_HELLO` — `0x81`
-
-Response to `CMD_HELLO`.
-
-| Offset | Size | Field          | Description                                            |
-|--------|------|----------------|--------------------------------------------------------|
-| 0      | 4    | device_nonce   | Random 32-bit value chosen by the blaster              |
-| 4      | 2    | firmware_ver   | BCD-encoded firmware version (e.g. `0x0120` = v1.2.0) |
-| 6      | 1    | battery_pct    | Battery level 0–100                                    |
-
----
-
-### `EVT_PLAYER_CFG` — `0x91`
-
-Response to `CMD_GET_PLAYER`; same layout as `CMD_SET_PLAYER` payload.
-
----
-
-### `EVT_HIT` — `0xA0`
-
-Sent whenever this blaster is hit.
-
-| Offset | Size | Field        | Description                                      |
-|--------|------|--------------|--------------------------------------------------|
-| 0      | 1    | shooter_id   | player_id of the shooter (0 if unknown)          |
-| 1      | 1    | shooter_team | team_id of the shooter                           |
-| 2      | 1    | damage       | Damage points (typically 1)                      |
-| 3      | 1    | health_left  | Remaining health after this hit (0 = eliminated) |
-
----
-
-### `EVT_SHOT_FIRED` — `0xA1`
-
-Sent whenever the trigger is pulled.
-
-| Offset | Size | Field      | Description                           |
-|--------|------|------------|---------------------------------------|
-| 0      | 1    | shots_left | Remaining shots in current clip       |
-
----
-
-### `EVT_ELIMINATED` — `0xA2`
-
-Sent when the player is eliminated (health reaches 0).  No payload.
-
----
-
-### `EVT_RESPAWN` — `0xA3`
-
-Sent when the player respawns after elimination.  No payload.
-
----
-
-### `EVT_GAME_END` — `0xB0`
-
-Sent when the game ends (time expired, `CMD_STOP_GAME` received, or last player standing).
-
-| Offset | Size | Field      | Description                    |
-|--------|------|------------|--------------------------------|
-| 0      | 1    | reason     | 0=time_up, 1=stopped, 2=winner |
-| 1      | 1    | winner_id  | player_id of winner (FFA only) |
-| 2      | 1    | winner_team| team_id of winning team        |
-
----
-
-### `EVT_STATS` — `0xC0`
-
-Response to `CMD_GET_STATS`.
-
-| Offset | Size | Field          | Description                          |
-|--------|------|----------------|--------------------------------------|
-| 0      | 1    | player_id      | This player's ID                     |
-| 1      | 2    | shots_fired    | Total shots fired during the game    |
-| 3      | 2    | hits_received  | Times this player was hit            |
-| 5      | 2    | hits_scored    | Confirmed hits on other players      |
-| 7      | 2    | eliminations   | Number of players this player killed |
-| 9      | 2    | deaths         | Number of times this player died     |
-| 11     | 2    | game_duration_s| Actual game duration in seconds      |
-| 13     | 1    | accuracy_pct   | shots that hit / shots fired × 100   |
-
----
-
-## Checksum Calculation
-
-```python
-def checksum(packet_without_checksum: bytes) -> int:
-    result = 0
-    for byte in packet_without_checksum:
-        result ^= byte
-    return result
+```
+35 00 0a 02 02 01 00 0a  04  12  14  00  0a
 ```
 
 ---
 
-## Example: Start a 5-minute FFA game with Player 1
+### Host sends initial volume
 
 ```
-# CMD_SET_PLAYER  player_id=1, team=0, name="Player1"
-4C 10 09  01 00 07 50 6C 61 79 65 72 31  CS
-
-# CMD_SET_GAME  mode=FFA, duration=300s, lives=3, respawn=5s, no friendly_fire
-4C 20 06  00 2C 01 03 05 00  CS
-
-# CMD_START_GAME
-4C 21 00  CS
+5b  XX
 ```
 
-(Replace `CS` with the XOR checksum of all preceding bytes in each packet.)
+Length: 2 bytes. `XX` = `1f` (31, max) when app persists max volume; `00` when muted (observed in Test 6).
+
+---
+
+## Config Write
+
+### Host writes level + name config to gun
+
+```
+36 00 0a 02 02 01 00 0a  LL  NN  MM  00  0a   ← form A
+36 00 0a 02 02 03 00 0a  LL  NN  MM  00  04   ← form B
+36 00 0d 03 02 03 00 0f  LL  NN  MM  00  VV   ← form C (level 4+)
+```
+
+Length: 13 bytes.  **Confidence: confirmed structure; `LL` field high confidence**.
+
+Observed examples from Test 1 (after app assigned names):
+
+```
+36 00 0a 02 02 03 00 0a  03  12  14  00  04   ← gun 0, level 3, name idx 17+1/19+1
+36 00 0a 02 02 03 00 0a  02  02  04  00  04   ← gun 1, level 2, name idx 1+1/3+1
+36 00 0a 02 02 03 00 0a  01  03  05  00  04   ← gun 2, level 1, name idx 2+1/4+1
+36 00 0a 02 02 03 00 0a  02  04  0a  00  04   ← gun 3, level 2
+```
+
+Test 6 baseline write (level 4):
+
+```
+36 00 0d 03 02 03 00 0f  04  12  14  00  04
+```
+
+Previous level-3 baseline write for comparison:
+
+```
+36 00 0a 02 02 03 00 0a  03  12  14  00  04
+```
+
+Changed byte positions when level moved 3→4: bytes 2 (`0a`→`0d`), 3 (`02`→`03`), 7 (`0a`→`0f`), 8 (`03`→`04`).
+
+---
+
+### Host sends apply/commit
+
+```
+57
+```
+
+Length: 1 byte.  Sent after config writes.  **Confidence: confirmed placement; inferred meaning**.
+
+---
+
+## Volume Control
+
+```
+5b  XX
+```
+
+`XX` range: `00` (mute) to `1f` (max = 31 decimal).  Continuous slider position — not discrete steps.
+
+Test 4 sweep data (three sweeps, no gameplay):
+
+| Time (s) | Payload  | Phase          |
+|----------|----------|----------------|
+| 34.4     | `5b 1f`  | startup default |
+| 119.2    | `5b 19`  | down sweep 1   |
+| 120.1    | `5b 15`  | down sweep 1   |
+| 121.0    | `5b 10`  | down sweep 1   |
+| 121.8    | `5b 0b`  | down sweep 1   |
+| 122.6    | `5b 07`  | down sweep 1   |
+| 123.4    | `5b 04`  | down sweep 1   |
+| 125.2    | `5b 00`  | down sweep 1 (min) |
+| 126.2    | `5b 02`  | up sweep       |
+| 127.0    | `5b 03`  | up sweep       |
+| 127.9    | `5b 06`  | up sweep       |
+| 129.5    | `5b 0a`  | up sweep       |
+| 130.2    | `5b 0f`  | up sweep       |
+| 131.1    | `5b 14`  | up sweep       |
+| 131.9    | `5b 18`  | up sweep       |
+| 132.7    | `5b 1b`  | up sweep       |
+| 133.4    | `5b 1f`  | up sweep (max) |
+
+---
+
+## Periodic Status
+
+### Poll (host → gun, every ~27 s)
+
+```
+51
+```
+
+### Reply (gun → host)
+
+```
+51  XX  YY
+```
+
+Observed values (3 bytes, status word drifts upward over time):
+
+```
+51 03 32   51 03 33   51 03 34   51 03 35   ← gun 0
+51 02 bf   51 02 c2   51 02 c3              ← gun 1
+51 03 3e   51 03 3f   51 03 40              ← gun 2
+51 02 b9   51 02 bb                         ← gun 3
+```
+
+---
+
+## Gameplay Events
+
+### Trigger / fire (gun → host)
+
+```
+49
+```
+
+Single byte, one per trigger pull.  **Confidence: high**.
+
+### Reload marker pair (gun → host)
+
+First byte, then ~0.5 s later second byte:
+
+```
+52          ← reload marker A
+31 0a       ← reload marker B (older mode, Tests 1–6)
+31 0d       ← reload marker B (newer mode, Test 7)
+```
+
+**Confidence: medium**.
+
+### Ammo / shot state (gun → host)
+
+Older mode (Tests 1–6):
+
+```
+32 02 XX    (e.g. 32 02 09, 32 02 08, 32 02 07 …)
+32 0a XX
+```
+
+Newer mode (Test 7):
+
+```
+32 03 XX
+32 0e XX
+```
+
+`XX` appears to be a descending counter.  **Confidence: medium-high**.
+
+---
+
+## In-Game Control
+
+```
+37 0a 01 00   ← older mode (Tests 2–6, 6 times in Test 2)
+37 0e 01 00   ← newer mode (Test 7)
+```
+
+Candidate meaning: reload / special-shot state transition.  **Confidence: medium**.
+
+---
+
+## Game Setup (observed in Test 2 — semantics low confidence)
+
+```
+44 01
+49 01 00
+4a 00 00 00 00 00 00 00 00 00 13 88
+41 13 88
+3b 07
+39 0a
+```
+
+---
+
+## End-of-Game Statistics
+
+### Stat request (host → gun, repeated with different TT values)
+
+```
+5a 3f 01  TT  00 00
+```
+
+Observed `TT` values: `01`, `02`, `06`.  **Confidence: inferred**.
+
+### Stat counter reply (gun → host)
+
+```
+30 01 3f  TT  NN
+```
+
+`NN` descends from an upper bound down to `00`.  Upper bound observed per level:
+- Level 3 (Tests 2–3): upper bound `09`
+- Level 4 (Test 6):    upper bound `0e`
+- Level 5 (Test 7):    values `00 04 05 06 07 0e` (multi-round capture)
+
+### End-of-game terminal marker (gun → host)
+
+```
+3e 01 00
+```
+
+**Confidence: medium**.
+
+---
+
+## Session Close
+
+```
+42
+```
+
+Single byte, last host command.  **Confidence: low-medium**.
+
+---
+
+## Level-5 State Writes (Test 7)
+
+New `36` writes with level byte `05` appeared in the later phase of Test 7:
+
+```
+36 00 0a 02 02 01 00 0a  05  12  14  00  0a
+36 00 0a 02 02 03 00 0a  05  12  14  00  04
+36 00 0d 03 02 03 00 0f  05  12  14  00  03
+```
+
+---
+
+## Sources
+
+- `test_on_android/test_1/traffic_definition.md`
+- `test_on_android/test_2/test_2.md` through `test_7/test_7.md`
+- `definition_protocol/protocol_definition.json`
+
