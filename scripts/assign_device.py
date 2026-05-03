@@ -10,17 +10,19 @@ Protocol details (from Test 1 captures):
 Name bytes (NN / MM in the payload) are inferred to be (app_name_index + 1)
 based on Test 1 capture data.  The app uses separate scrollable word lists for
 the first and second name word; the byte encodes the 1-based position within
-the respective list.  This relationship is inferred, not fully confirmed.
+the respective list (0-based index + 1).  This relationship is inferred, not
+fully confirmed.
 
 Name-space limits (IMPORTANT):
   The protocol byte is an 8-bit value (0x00–0xff), but the app's name-word
-  lists are finite.  The highest first-name byte ever observed across all test
-  captures is 0x12 = 18 ("Hurricane", Test 1 g0, app list position 17).
-  The highest second-name byte ever observed is 0x14 = 20 ("Howler", Test 1
-  g0, app list position 19).  Bytes above these values have never been seen
-  in captures and are very likely to lie outside the valid name list; sending
-  them may produce undefined behavior on the gun.  Do not exceed the observed
-  maximum values unless you have verified the full name list size.
+  lists are finite.  The highest name bytes ever observed across all test
+  captures come from pre-existing gun names visible in startup snapshots:
+    - First-name byte max: 0x32 = 50 (g3 startup "Zinc", Test 1)
+    - Second-name byte max: 0x32 = 50 (g0 startup "Zombie", Test 1)
+  Bytes above 0x32 have never been seen in any capture and are very likely
+  to lie outside the valid name list; sending them may produce undefined
+  behavior on the gun.  Do not exceed 0x32 unless you have verified the
+  full name list size.
 
 Usage:
     python assign_device.py --address E4:FE:7C:AA:11:22 \\
@@ -96,18 +98,20 @@ if __name__ == "__main__":
         "--name-a", type=int, default=0,
         metavar="INDEX",
         help=(
-            "1-based position in the app's first-name word list (default: 0). "
-            "Observed maximum across all test captures: 17 (byte 0x12, 'Hurricane'). "
-            "Values above 17 are untested and may cause undefined behavior."
+            "0-based index in the app's first-name word list (default: 0). "
+            "Observed maximum across all test captures: index 49, byte 0x32 = 50 decimal "
+            "('Zinc', g3 startup Test 1). "
+            "Values above 49 are untested and may cause undefined behavior."
         ),
     )
     parser.add_argument(
         "--name-b", type=int, default=0,
         metavar="INDEX",
         help=(
-            "1-based position in the app's second-name word list (default: 0). "
-            "Observed maximum across all test captures: 19 (byte 0x14, 'Howler'). "
-            "Values above 19 are untested and may cause undefined behavior."
+            "0-based index in the app's second-name word list (default: 0). "
+            "Observed maximum across all test captures: index 49, byte 0x32 = 50 decimal "
+            "('Zombie', g0 startup Test 1). "
+            "Values above 49 are untested and may cause undefined behavior."
         ),
     )
     parser.add_argument(

@@ -152,7 +152,36 @@ The original test log recorded "Index 2" for g3's first name ("Burst"), which wo
 
 The app uses **separate** word lists for the first and second name words, each with independent indices.
 
-> **Note:** The highest first-name byte observed across all tests is `0x12` = 18 ("Hurricane", Test 1).  The highest second-name byte observed is `0x14` = 20 ("Howler", Test 1).  Values above these have never been observed and may not map to valid words in the app.  Sending out-of-range byte values could cause unpredictable behavior on the gun.
+#### Observed name byte range (highest observed values)
+
+The startup snapshot (35...) carries the *pre-existing* name stored on the gun.  Three guns in Test 1 already had names before being renamed, giving the highest observed name bytes:
+
+| Gun | Pre-existing app name | Startup NN (first-name byte) | Startup MM (second-name byte) |
+|-----|-----------------------|------------------------------|-------------------------------|
+| g0  | Laser Zombie          | `0x17` (23)                  | `0x32` (50)                   |
+| g1  | Frost Falcon          | `0x0f` (15)                  | `0x0f` (15)                   |
+| g3  | Zinc Zenith           | `0x32` (50)                  | `0x31` (49)                   |
+
+Highest first-name byte observed across all tests: **`0x32` = 50** ("Zinc", g3 startup, Test 1).  
+Highest second-name byte observed across all tests: **`0x32` = 50** ("Zombie", g0 startup, Test 1).
+
+> **Note:** The protocol byte is an 8-bit field so values up to `0xff` are technically sendable, but the app's name-word lists are finite.  The highest value ever observed in any capture is `0x32` (50).  Bytes above `0x32` have never been seen and very likely do not map to valid words in the app; sending them may cause undefined behavior on the gun.
+
+#### Fixed bytes and upgrade-count correlation in `35 ...` and `36 ...`
+
+Startup snapshot (`35 ...`):  
+Bytes 2, 3, 4, 5, 7, 12 (`0a 02 02 01 0a 0a`) are **constant** across all observed startup payloads, regardless of gun level or upgrade count.  Only bytes 8–10 (`LL NN MM`) vary.
+
+Config write (`36 ...`):  
+Forms A and B share the same bytes 2, 3, 7 (`0a`, `02`, `0a`).  These are constant for all four Test 1 guns — level 1, 2, and 3, with 0–3 upgrades — confirming they do **not** vary per-gun or per-upgrade within that level range.  Form C, which only appears at level 4+, uses different values for those bytes:
+
+| Byte position | Forms A/B (level 1–3) | Form C (level 4+) | Change |
+|---------------|-----------------------|-------------------|--------|
+| 2             | `0a` (10)             | `0d` (13)         | +3     |
+| 3             | `02`  (2)             | `03`  (3)         | +1     |
+| 7             | `0a` (10)             | `0f` (15)         | +5     |
+
+The transition from (0a, 02, 0a) to (0d, 03, 0f) is observed when g0 advances from level 3 (3 upgrades) to level 4 (4 upgrades).  At level 5 (still 4 upgrades of different types) these bytes remain at (0d, 03, 0f), so the change is not driven solely by upgrade type.  Whether the trigger is the **level threshold** or the **4th upgrade slot** being filled cannot be determined from the available captures; a minimal capture comparing a level-4 gun before and after its 4th upgrade would be needed to disambiguate.  **Confidence: inferred.**
 
 ---
 
