@@ -186,7 +186,7 @@ First byte, then ~0.5 s later second byte:
 31 0d       ← reload marker B (newer mode, Test 7)
 ```
 
-**Confidence: medium**.
+The second byte in the reload marker B (`0a` / `0d`) may represent the number of ammunition reloaded per cycle — `0x0a` = 10 in older mode (Tests 1–6, levels 1–4) and `0x0d` = 13 in newer mode (Test 7, level 5).  This is consistent with a Munition upgrade increasing the magazine size.  **Confidence: inferred**.
 
 ### Ammo / shot state (gun → host)
 

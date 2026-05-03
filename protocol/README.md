@@ -258,6 +258,8 @@ Two-byte notification on handle `0x0023`. Pairs 1:1 with `52` in gameplay captur
 | `310a` | Older mode (Tests 1–6)               | Medium     |
 | `310d` | Newer mode (Test 7, level 5)         | Medium     |
 
+The second byte (`0a` = 10 / `0d` = 13) may represent the number of ammunition reloaded per cycle — consistent with a Munition upgrade increasing the magazine size from 10 to 13.  **Confidence: inferred**.
+
 ---
 
 ### `32 XX ...` — Ammo / Shot State (gun → host)
