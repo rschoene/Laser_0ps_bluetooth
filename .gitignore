@@ -4,10 +4,28 @@
 # Device address inventory (sensitive)
 test_on_android/devices.md
 
-# Python cache files
+# Python bytecode
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
 
 # Packet captures (may contain sensitive metadata)
 *.pcap
 *.pcapng
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Editor / OS artefacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
