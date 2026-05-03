@@ -2,19 +2,20 @@
 """
 start_game.py — Send the game-start command sequence to a LaserOps blaster.
 
-The commands used here were observed in Test 2 (single-player AR mode).
-Their exact semantics are low-to-medium confidence — they are reproduced
-from capture data without full understanding of each byte's meaning.
+The commands used here were first observed in Test 2 (single-player AR mode)
+and are consistently present in all subsequent AR game session captures
+(Tests 3–7), all of which use the same single-player AR mode.
+Exact semantics are inferred from context; confidence is medium.
 
-Observed sequence from Test 2 (host → gun, handle 0x0026):
+Observed sequence at start of every AR game session (host → gun, handle 0x0026):
   35            startup query
   5b 1f         initial volume
   36 ...        config write
   57            apply/commit
   44 01         game mode init flag (inferred)
   49 01 00      game option toggle (inferred)
-  4a 00 00 00 00 00 00 00 00 00 13 88   timed game setup (inferred)
-  41 13 88      setup parameter (inferred)
+  4a 00 00 00 00 00 00 00 00 00 13 88   timed game setup — 0x1388=5000 (inferred)
+  41 13 88      setup parameter paired with 4a (inferred)
   3b 07         setup parameter (inferred)
   39 0a         setup parameter (inferred)
 
@@ -36,7 +37,10 @@ from laserops import (
     decode_notification,
 )
 
-# Game-setup command bytes observed in Test 2 (semantics inferred / low confidence)
+# Game-setup command bytes consistently observed at the start of every AR game
+# session (first identified in Test 2; present in all subsequent Tests 3–7
+# which all use the same single-player AR mode).  Exact semantics are inferred
+# from context, not proven — confidence: medium.
 _GAME_SETUP_COMMANDS = [
     bytes.fromhex("4401"),
     bytes.fromhex("490100"),
@@ -89,7 +93,7 @@ async def main(
         print("  ✓  Game-start sequence sent.")
         print(
             "  Note: the meaning of the setup commands is not fully confirmed. "
-            "Observe the gun's behaviour and capture BLE traffic to verify."
+            "Observe the gun's behavior and capture BLE traffic to verify."
         )
 
 

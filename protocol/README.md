@@ -104,25 +104,55 @@ Observed forms:
 
 Field mapping for byte 8 (`LL`) and bytes 9–10 (`NN MM`) — same layout as the startup snapshot.
 
-Confirmed level byte values from Test 1 config writes:
+#### g0 level progression across all tests
 
-| Gun | Configured level | `LL` byte |
-|-----|------------------|-----------|
-| g0  | 3                | `03`      |
-| g1  | 2                | `02`      |
-| g2  | 1                | `01`      |
-| g3  | 2                | `02`      |
+Gun 0 started at level 3 (visible in Test 1 captures) and progressed to level 5 by Test 7.  Tracking how the config write changed reveals which bytes encode level vs. state:
+
+| Test(s) | Level | Upgrades allocated | Example config write payload |
+|---------|-------|--------------------|------------------------------|
+| 1–5     | 3     | Health×1, Munition×1, Damage×1 (+ Power-Up Attack) | `36000a020203000a031214000[3/4]` |
+| 6       | 4     | Health×1, Munition×1, Damage×1, Reload speed×1     | `36000d030203000f0412140004`      |
+| 7       | 5     | Health×1, Ammunition×1, Damage×1, Reactivation time×1 | `36000d030203000f0512140003`   |
+
+Byte-level deltas when level increased 3 → 4 (Test 6 vs. Test 5):
+
+| Byte | Test 5 value | Test 6 value | Note |
+|------|-------------|-------------|------|
+| 2    | `0a`        | `0d`        | Changed with level-4 state |
+| 3    | `02`        | `03`        | Changed with level-4 state |
+| 7    | `0a`        | `0f`        | Changed with level-4 state |
+| 8    | `03`        | `04`        | Level byte `LL` |
+| 12   | `04`        | `04`        | Unchanged (form B) |
+
+At level 5 (Test 7) all three forms (A, B, C) reappear; the trailing byte in form C shifts from `04` to `03`.  Bytes 2, 3, and 7 likely encode progression-dependent parameters (possibly related to upgrade count or type), but their exact meaning is **inferred**.
+
+Other guns from Test 1 (no later progression data available):
+
+| Gun | Configured level | `LL` byte | Upgrades allocated |
+|-----|------------------|-----------|--------------------|
+| g0  | 3                | `03`      | Health×1, Munition×1, Damage×1 |
+| g1  | 2                | `02`      | Damage×1 |
+| g2  | 1                | `01`      | None |
+| g3  | 2                | `02`      | Reload speed×1 |
+
+#### Name-part bytes
 
 Observed name-part bytes for configured guns (from Test 1):
 
-| Gun | Name (app)        | App indices | `NN` | `MM` |
-|-----|-------------------|-------------|------|------|
-| g0  | Hurricane Howler  | 17, 19      | `12` | `14` |
-| g1  | Air Blaze         | 1, 3        | `02` | `04` |
-| g2  | Atom Beast        | 2, 4        | `03` | `05` |
-| g3  | Burst Defender    | 2, 9        | `04` | `0a` |
+| Gun | App-displayed name | Protocol byte `NN` | Protocol byte `MM` | Inferred first-word list position | Inferred second-word list position |
+|-----|--------------------|--------------------|--------------------|---------------------------------|----------------------------------|
+| g0  | Hurricane Howler   | `12` (18)          | `14` (20)          | 17                              | 19                               |
+| g1  | Air Blaze          | `02` (2)           | `04` (4)           | 1                               | 3                                |
+| g2  | Atom Beast         | `03` (3)           | `05` (5)           | 2                               | 4                                |
+| g3  | Burst Defender     | `04` (4)           | `0a` (10)          | 3                               | 9                                |
 
-The relationship between app UI name-list index and the byte value is **inferred**: observed values suggest `byte = app_index + 1`, but this has not been systematically verified across all available name slots.
+The protocol byte values are **confirmed** from captures.  The "inferred list position" column is byte − 1 in both cases.
+
+The original test log recorded "Index 2" for g3's first name ("Burst"), which would predict byte `03`; the actual captured byte is `04`.  The captures are authoritative; the test log entry appears to have a transcription error.  Comparing g2 and g3 on the first-name word list: "Atom" → byte `03` (list position 2), "Burst" → byte `04` (list position 3), consistent with an alphabetically ordered list.
+
+The app uses **separate** word lists for the first and second name words, each with independent indices.
+
+> **Note:** The highest first-name byte observed across all tests is `0x12` = 18 ("Hurricane", Test 1).  The highest second-name byte observed is `0x14` = 20 ("Howler", Test 1).  Values above these have never been observed and may not map to valid words in the app.  Sending out-of-range byte values could cause unpredictable behavior on the gun.
 
 ---
 

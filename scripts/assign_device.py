@@ -8,7 +8,19 @@ Protocol details (from Test 1 captures):
   - Apply/commit: host sends 0x57 after config write.
 
 Name bytes (NN / MM in the payload) are inferred to be (app_name_index + 1)
-based on Test 1 capture data.  This relationship is not fully confirmed.
+based on Test 1 capture data.  The app uses separate scrollable word lists for
+the first and second name word; the byte encodes the 1-based position within
+the respective list.  This relationship is inferred, not fully confirmed.
+
+Name-space limits (IMPORTANT):
+  The protocol byte is an 8-bit value (0x00–0xff), but the app's name-word
+  lists are finite.  The highest first-name byte ever observed across all test
+  captures is 0x12 = 18 ("Hurricane", Test 1 g0, app list position 17).
+  The highest second-name byte ever observed is 0x14 = 20 ("Howler", Test 1
+  g0, app list position 19).  Bytes above these values have never been seen
+  in captures and are very likely to lie outside the valid name list; sending
+  them may produce undefined behavior on the gun.  Do not exceed the observed
+  maximum values unless you have verified the full name list size.
 
 Usage:
     python assign_device.py --address E4:FE:7C:AA:11:22 \\
@@ -83,12 +95,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--name-a", type=int, default=0,
         metavar="INDEX",
-        help="App name-list index for first name word (default: 0)",
+        help=(
+            "1-based position in the app's first-name word list (default: 0). "
+            "Observed maximum across all test captures: 17 (byte 0x12, 'Hurricane'). "
+            "Values above 17 are untested and may cause undefined behavior."
+        ),
     )
     parser.add_argument(
         "--name-b", type=int, default=0,
         metavar="INDEX",
-        help="App name-list index for second name word (default: 0)",
+        help=(
+            "1-based position in the app's second-name word list (default: 0). "
+            "Observed maximum across all test captures: 19 (byte 0x14, 'Howler'). "
+            "Values above 19 are untested and may cause undefined behavior."
+        ),
     )
     parser.add_argument(
         "--volume", type=int, default=VOLUME_MAX,
