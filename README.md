@@ -145,7 +145,6 @@ Current sanitized mapping labels used in docs and notes:
 ## Limitations
 
 - Some field meanings are inferred and may change with new captures.
-- App/blaster firmware changes can shift payload families (for example `0x0a`-series to `0x0d`/`0x0e`-series after level 4+).
 
 ---
 
