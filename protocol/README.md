@@ -57,21 +57,21 @@ Single byte `35` on handle `0x0026`. Triggers the gun startup snapshot response.
  0  1  2  3  4  5  6  7   8   9  10  11  12
 ```
 
-| Byte | Symbol | Meaning                        | Confidence |
-|------|--------|--------------------------------|------------|
-| 0    | `35`   | Message ID                     | Confirmed  |
-| 1    | `00`   | Fixed / reserved               | Confirmed  |
-| 2    | `0a`   | Fixed marker                   | Inferred   |
-| 3    | `02`   | Fixed protocol/group field     | Inferred   |
-| 4    | `02`   | Fixed protocol/group field     | Inferred   |
-| 5    | `01`   | Startup subcommand / mode      | Inferred   |
-| 6    | `00`   | Fixed / reserved               | Confirmed  |
-| 7    | `0a`   | Fixed marker                   | Inferred   |
-| 8    | `LL`   | Persistent level               | High       |
-| 9    | `NN`   | Name part 1 (option field A)   | Inferred   |
-| 10   | `MM`   | Name part 2 (option field B)   | Inferred   |
-| 11   | `00`   | Fixed / reserved               | Confirmed  |
-| 12   | `0a`   | Fixed terminator               | Inferred   |
+| Byte | Symbol | Meaning                                                      | Confidence |
+|------|--------|--------------------------------------------------------------|------------|
+| 0    | `35`   | Message ID                                                   | Confirmed  |
+| 1    | `00`   | Fixed / reserved                                             | Confirmed  |
+| 2    | `0a`   | Fixed in this snapshot; not a live health/ammo field         | Confirmed  |
+| 3    | `02`   | Fixed protocol/group field                                   | Inferred   |
+| 4    | `02`   | Fixed protocol/group field                                   | Inferred   |
+| 5    | `01`   | Startup subcommand / mode                                    | Inferred   |
+| 6    | `00`   | Fixed / reserved                                             | Confirmed  |
+| 7    | `0a`   | Fixed in this snapshot; not a live health/ammo field         | Confirmed  |
+| 8    | `LL`   | Persistent level                                             | High       |
+| 9    | `NN`   | Name part 1 (option field A)                                 | Inferred   |
+| 10   | `MM`   | Name part 2 (option field B)                                 | Inferred   |
+| 11   | `00`   | Fixed / reserved                                             | Confirmed  |
+| 12   | `0a`   | Fixed terminator                                             | Inferred   |
 
 Observed startup snapshots across Test 1:
 
@@ -83,6 +83,12 @@ Observed startup snapshots across Test 1:
 | g3  | `35000a020201000a023231000a`      | level 2, name parts 0x32/0x31 |
 
 Test 6 (gun 0, now level 4):
+
+```
+35000a020201000a041214000a
+```
+
+Test 7, Phase A (gun 0, level 4 still active at session start):
 
 ```
 35000a020201000a041214000a
@@ -172,6 +178,8 @@ Highest second-name byte observed across all tests: **`0x32` = 50** ("Zombie", g
 Startup snapshot (`35 ...`):  
 Bytes 2, 3, 4, 5, 7, 12 (`0a 02 02 01 0a 0a`) are **constant** across all observed startup payloads, regardless of gun level or upgrade count.  Only bytes 8–10 (`LL NN MM`) vary.
 
+Importantly, bytes 2 and 7 remain `0a` even at level 4 (Test 6 and Test 7, Phase A).  This rules out interpreting them as live health or ammunition fields: if byte 7 encoded the current magazine size, it would read `0d` (13) at level 5 after an Ammunition upgrade — but it does not.  The `0a` values are fixed framing bytes specific to this snapshot format.
+
 Config write (`36 ...`):  
 Forms A and B share the same bytes 2, 3, 7 (`0a`, `02`, `0a`).  These are constant for all four Test 1 guns — level 1, 2, and 3, with 0–3 upgrades — confirming they do **not** vary per-gun or per-upgrade within that level range.  Form C, which only appears at level 4+, uses different values for those bytes:
 
@@ -181,7 +189,9 @@ Forms A and B share the same bytes 2, 3, 7 (`0a`, `02`, `0a`).  These are consta
 | 3             | `02`  (2)             | `03`  (3)         | +1     |
 | 7             | `0a` (10)             | `0f` (15)         | +5     |
 
-The transition from (0a, 02, 0a) to (0d, 03, 0f) is observed when g0 advances from level 3 (3 upgrades) to level 4 (4 upgrades).  At level 5 (still 4 upgrades of different types) these bytes remain at (0d, 03, 0f), so the change is not driven solely by upgrade type.  Whether the trigger is the **level threshold** or the **4th upgrade slot** being filled cannot be determined from the available captures; a minimal capture comparing a level-4 gun before and after its 4th upgrade would be needed to disambiguate.  **Confidence: inferred.**
+The same byte positions therefore carry **different** fixed values depending on whether the message is a startup snapshot (`35 ...`) or a level 4+ config write (`36 ...` form C).  The snapshot always uses `0a` in those positions; the config write uses `0d` / `0f` at level 4+.  This asymmetry confirms the two message types have independent fixed fields and the `0a` values in the snapshot are not echoed game-stats.
+
+The transition in the config write from (0a, 02, 0a) to (0d, 03, 0f) is observed when g0 advances from level 3 (3 upgrades) to level 4 (4 upgrades).  At level 5 (still 4 upgrades of different types) these bytes remain at (0d, 03, 0f), so the change is not driven solely by upgrade type.  Whether the trigger is the **level threshold** or the **4th upgrade slot** being filled cannot be determined from the available captures; a minimal capture comparing a level-4 gun before and after its 4th upgrade would be needed to disambiguate.  **Confidence: inferred.**
 
 ---
 
