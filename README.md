@@ -2,6 +2,15 @@
 
 Reverse-engineering documentation and Python tooling for the **Hasbro NERF LaserOps** Bluetooth Low Energy (BLE) protocol, derived entirely from Android BLE HCI captures.
 
+## Contributing
+
+Contributions (additional HCI captures, corrections, clarifications) are welcome, especially for Hasbro Nerf LaserOps Pro DeltaBurst devices, to which I do not have access.
+Please open an issue or a pull request.
+If you provide an HCI capture, it would be great if you'd document what you did (number of devices, game mode and setup, estimation or detailed description of statistics and so on).
+Check `test_on_android/test_definition.md` on how to capture HCI protocols on Android.
+
+---
+
 ## Project Goals
 
 - Document the observed BLE protocol between app and blaster(s).
@@ -137,13 +146,6 @@ Current sanitized mapping labels used in docs and notes:
 
 - Some field meanings are inferred and may change with new captures.
 - App/blaster firmware changes can shift payload families (for example `0x0a`-series to `0x0d`/`0x0e`-series after level 4+).
-
----
-
-## Contributing
-
-Contributions (additional HCI captures, corrections, clarifications) are welcome.  
-Please open an issue or a pull request.
 
 ---
 
