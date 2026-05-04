@@ -1,169 +1,158 @@
-# Test 9: Single-Player AR Duel - Protocol Analysis
+# Test 9: Two-Blaster Multiplayer - Protocol Analysis
 
 ## Test Overview
-- **Scenario**: Single-player AR mode with 2 guns (stat-query validation test)
-- **Guns**: g0, g1 (gun_0, gun_1 in traces)
-- **Protocol Focus**: Stat exchange and cumulative shot recording
-- **Key Difference from Test 8**: Includes `47` messages during gameplay
 
-## Important Discovery: Message 47 in Game Context
+- **Scenario**: two connected blasters, 3-minute multiplayer game, repeated twice
+- **Capture evidence**: two startup snapshots, two game-start sequences, and two end-of-game stat exchanges
+- **Important correction**: this is **not** a single-player AR duel
 
-Test 9 reveals that message `47` **IS sent during gameplay**, but only in certain contexts:
-- **NOT** during continuous multiplayer action
-- **Appears** in stat-query phases or at game transitions
-- Contains cumulative shot/hit information
+The handwritten notes in [test_9.md](test_9.md) describe two multiplayer rounds with two blasters, where one blaster fires 30 shots with 10 hits / 2 kills in round 1, then 10 shots with 7 hits / 1 kill in round 2. The filtered BLE traffic matches that structure closely.
 
-## Game Timeline
+## What Is Actually In The Capture
 
-### Game 1 Setup (t=7s)
+Observed payload families in Test 9:
 
-**Slot Assignment**:
-- Host → Gun 0: `490200` (Slot 2)
-- Host → Gun 1: `490301` (Slot 3)
+- `35` and `35...` startup query / snapshot
+- `49...` per-blaster pre-game assignment/config packets
+- `4a000aff00b4000000002710` game configuration
+- `5b00` volume set
+- `58` game arm/start
+- `42` end-of-game close
+- `47....` end-of-game per-blaster aggregate counter
+- `54..` end-of-game per-slot stat query and reply
 
-**Game Configuration**:
-- Host → Both: `4a000aff00b4000000002710`
-  - Duration: `0x00b4` = 180 seconds (3 minutes) ✓
-  - Same encoding as Test 8
+Notably, there are **no `51` packets on the main command/notification handles** in this filtered Test 9 stream. The earlier `51 = gameplay polling` claim was too aggressive. Per [protocol_definition.json](../../definition_protocol/protocol_definition.json), `51` is better treated as a likely battery/status exchange, and it is not needed to explain the multiplayer round flow in this test.
 
-**Game Start**:
-- Host → Gun 0: `58` (arm/start)
-- Host → Gun 1: `58`
+## Round 1 Sequence
 
-### Game 1 Active Phase (t=7-213s)
+### Round 1 Setup
 
-**Initial State**:
-- Gun 0 state snapshot: `35000a020201000a020204000a` (level 2, upgrades)
-- Gun 1 state snapshot: `35000a020201000a051214000a` (level 5, upgrades)
+- `7.428s` host → blaster A: `490200`
+- `7.547s` host → blaster A: `4a000aff00b4000000002710`
+- `7.666s` host → blaster A: `5b00`
+- `7.786s` host → blaster A: `35`
+- `7.825s` blaster A → host: `35000a020201000a020204000a`
+- `7.986s` host → blaster A: `58`
 
-**Status Polling**:
-- Periodic `51` host queries
-- Gun responses with `5102XX` status words
-- **Pattern**: Every ~30-50s
+- `15.487s` host → blaster B: `490301`
+- `15.607s` host → blaster B: `4a000aff00b4000000002710`
+- `15.726s` host → blaster B: `5b00`
+- `15.846s` host → blaster B: `35`
+- `15.887s` blaster B → host: `35000a020201000a051214000a`
+- `16.046s` host → blaster B: `58`
 
-### Game 1 End & Stat Exchange (t=213-214s)
+### Round 1 End-Of-Round Exchange
 
-**Close Session**:
-- Host → Guns: `42` (session close)
+- `213.082s` blaster B → host: `47001e`
+- `213.222s` host → one blaster: `42`
+- `213.316s` blaster A → host: `470000`
+- `213.342s` host → query: `5402`
+- `213.401s` reply: `5400000002`
+- `213.462s` host → second close: `42`
+- `213.582s` host → query: `5403`
+- `213.618s` reply: `54000a0203`
 
-**Message 47 Appearance** (CRITICAL):
-- Gun 1: `47001e` → **0x1e = 30 decimal** (possibly cumulative shots in this game?)
-- Gun 0: `470000` → **0 shots/hits**
+### Round 1 Interpretation
 
-**Stat Slot Query**:
-- Host → Gun 0: `5402` (query slot 2)
-- Gun 1 response: `5400000002` 
-  - Format: `54 [index] [hits] [kills] [status]`
-  - Slot 2: 0 hits, 0 kills, status=0x02
+- `47001e` is a strong match for the handwritten note “shoots (30 times)” because `0x001e = 30`
+- `54000a0203` is a strong match for the handwritten round-1 result “hits 10 times, kills 2 times” because the middle bytes are `0x0a` and `0x02`
+- `470000` from the other blaster matches the loser’s `0` hits / `0` kills line in the note
 
-- Host → Gun 0: `5403` (query slot 3)
-- Gun 0 response: `54000a0203`
-  - Slot 3: 0xa=10 hits, 0x02=2 kills, status=0x03
+The safest interpretation is:
 
-**Interpretation**:
-- Slot 2 (Gun 1): 0 hits, 0 kills
-- Slot 3 (Gun 0): 10 hits, 2 kills
-- Message `47001e` from Gun 1 might indicate: 30 shots fired (not hits)
+- `47` carries a **per-blaster aggregate shot count** for the completed round
+- `54` replies carry **per-slot round stats**, with the last byte echoing the queried slot/index
 
-### Game 2 Setup (t=409s)
+Important ordering note:
 
-**Slot Assignment** (3rd game):
-- Host → Gun 0: `490400` (Slot 4)
-- Host → Gun 1: `490501` (Slot 5)
+- `47` is part of the round-close sequence, but not strictly before or after `42`
+- Test 8 shows the same interleaving behavior, so the robust conclusion is that `47`, `42`, and `54` belong to the same end-of-round exchange
 
-**Game Configuration**:
-- Same: `4a000aff00b4000000002710` (3 min)
+## Round 2 Sequence
 
-**Game Start**:
-- Host → Both: `58`
+### Round 2 Setup
 
-### Game 2 Active Phase (t=409-607s)
+- `409.049s` host → blaster A: `490400`
+- `409.170s` host → blaster A: `4a000aff00b4000000002710`
+- `409.288s` host → blaster A: `5b00`
+- `409.328s` host → blaster B: `490501`
+- `409.408s` host → blaster A: `35`
+- `409.452s` blaster A → host: `35000a020201000a020204000a`
+- `409.448s` host → blaster B: `4a000aff00b4000000002710`
+- `409.567s` host → blaster B: `5b00`
+- `409.608s` host → blaster A: `58`
+- `409.687s` host → blaster B: `35`
+- `409.729s` blaster B → host: `35000a020201000a051214000a`
+- `409.887s` host → blaster B: `58`
 
-Same polling pattern as Game 1
+### Round 2 End-Of-Round Exchange
 
-### Game 2 End & Stat Exchange (t=607s)
+- `606.543s` blaster B → host: `47000a`
+- `606.690s` host → close: `42`
+- `606.811s` host → query: `5404`
+- `606.914s` reply: `5400000004`
+- `607.660s` blaster A → host: `470000`
+- `607.807s` host → close: `42`
+- `607.926s` host → query: `5405`
+- `607.978s` reply: `5400070105`
 
-**Message 47 Appearance** (Again!):
-- Gun 1: `47000a` → **0x0a = 10 decimal** (shots fired this game?)
-- Gun 0: `470000` → 0
+### Round 2 Interpretation
 
-**Stat Responses**:
-- Host → Gun 0: `5404` (query slot 4)
-- Gun 1 response: `5400000004`
-  - Slot 4: 0 hits, 0 kills, status=0x04
+- `47000a` is a strong match for the handwritten note “shoots (10 times)” because `0x000a = 10`
+- `5400070105` is a strong match for the handwritten round-2 result “hits 7 times, kills 1 times” because the middle bytes are `0x07` and `0x01`
+- Again, the opposing blaster reports `470000`
 
-- Host → Gun 0: `5405` (query slot 5)
-- Gun 0 response: `5400070105`
-  - Slot 5: 0x07=7 hits, 0x01=1 kill, status=0x05
+## Best-Supported Message Meanings From Test 9
 
-## Protocol Message Analysis
+### `4a000aff00b4000000002710`
 
-### Message 47: Cumulative Shot Counter
+- Round configuration packet
+- `0x00b4 = 180` seconds, which matches the documented 3-minute rounds
 
-**Hypothesis** (based on Test 9 evidence):
-- Format: `47 [high_byte] [low_byte]`
-- Content: **Cumulative shots fired during THIS game session**
-- When sent: **At end-of-game stat exchange**, along with `42` close and `54` slot queries
+### `58`
 
-**Observations**:
-- Game 1: Gun 1 sent `47001e` (30 shots), Gun 0 sent `470000` (0 shots)
-- Game 2: Gun 1 sent `47000a` (10 shots), Gun 0 sent `470000` (0 shots)
-- Gun 1 always had shots fired, Gun 0 always zero → consistent per-player pattern
+- Round arm/start command
+- Sent once per connected blaster after startup/config is complete
 
-**Distinction from `54` responses**:
-- `47`: Shots fired (count)
-- `54`: Hits and kills (effectiveness)
-  - Example: Gun 1 fired 30 shots → 0 hits (missed all)
-  - Example: Gun 0 fired 0 shots → 7 hits, 1 kill (from previous rounds?)
+### `47 [hi] [lo]`
 
-**Mystery**: How did Gun 0 get 7 hits if it fired 0 shots in this game? 
-- Possible: Carryover from earlier incomplete game?
-- Or: Test data corruption (stat persistence issue)?
+- End-of-round aggregate counter
+- In Test 9, the value matches the documented shot counts exactly: `30` and `10`
+- This is much stronger evidence than the older “maybe cumulative shots” wording
+- Test 8 shows the same message family in the same round-close phase for the larger multiplayer mode
 
-## Confidence Ratings
+### `54 [stats...]`
 
-| Field | Confidence | Notes |
-|-------|-----------|-------|
-| Slot assignment (`49 XX YY`) | **STRONG** | Consistent across games |
-| Game duration (`4a ...00b4...`) | **STRONG** | 3min verified in 2 games |
-| Session close (`42`) | **STRONG** | Marks end-of-game |
-| Status polling (`51`) | **STRONG** | Continuous during play |
-| Message `47` = shot count | **MODERATE** | Pattern matches (0x1e=30, 0x0a=10), but needs validation |
-| Message `47` timing | **MODERATE** | Sent at game end with `42` and `54` |
-| Slot stat format (`54`) | **STRONG** | Clear hits/kills/status fields |
-| NO trigger events during active play | **STRONG** | Consistent with Test 8 |
+- End-of-round stat reply
+- In Test 9 the middle bytes line up with the documented hit / kill totals:
+  - `54000a0203` → `10` hits, `2` kills
+  - `5400070105` → `7` hits, `1` kill
+- Final byte appears to echo the queried slot/index (`03`, `05`)
 
-## Key Insight: Two Message Categories
+### `51`
 
-**During Active Gameplay**:
-- Status polling only (`51`, `5102XX`)
-- No individual trigger/reload events
-- No cumulative shot counters
+- Do **not** treat it as gameplay polling in this document
+- The protocol definition already marks it as likely battery/status
+- It is not part of the observed Test 9 command/notification stream used for this analysis
 
-**At Game End** (with `42` close):
-- Message `47`: Cumulative shots fired
-- Slot queries (`5402`, `5403`, ...): Stat matrix exchange
-- Slot responses (`5400XX...`): Hits/kills per slot
+## Revised Confidence
 
-**Implication**: Game stats are aggregated and sent only at session end, not during play.
+| Field | Confidence | Why |
+| ----- | ---------- | --- |
+| Test 9 is multiplayer | **VERY STRONG** | Matches both [test_9.md](test_9.md) and the two-blaster capture |
+| `4a ... 00b4 ...` = 3-minute config | **VERY STRONG** | Matches documented 3-minute rounds |
+| `58` = round start/arm | **STRONG** | Appears once per blaster after setup |
+| `47` = shots fired in completed round | **VERY STRONG** | `0x001e = 30`, `0x000a = 10`, exact match to handwritten notes |
+| `54` contains hit / kill totals | **VERY STRONG** | `10/2` and `7/1` match the notes exactly |
+| `51` is gameplay polling in Test 9 | **NOT SUPPORTED** | No `51` packets are present in the extracted Test 9 control stream |
+| `47` happens strictly after `42` | **NOT SUPPORTED** | Test 8 and Test 9 both show interleaving during round close |
 
-## Comparison: Test 8 vs Test 9
+## Conclusion
 
-| Aspect | Test 8 | Test 9 |
-|--------|--------|--------|
-| Game mode | 4v4 multiplayer | Single-player AR |
-| Guns | 4 | 2 |
-| Message `47` | Not captured | Captured at game end |
-| Message `54` | Captured | Captured |
-| Duration | 3 min (0x00b4) | 3 min (0x00b4) |
-| Status polling | Yes | Yes |
-| Trigger events | None (as expected) | None (as expected) |
+Test 9 is best understood as a **two-blaster multiplayer capture with two completed 3-minute rounds**. The strongest protocol evidence in this test is not `51`; it is the tight correlation between:
 
-**Hypothesis**: Test 8 may have terminated before stat exchange completed, or stat exchange is optional for multiplayer.
+- handwritten round results in [test_9.md](test_9.md)
+- `47` values (`30`, `10`) for shots fired
+- `54` values (`10/2`, `7/1`) for hits and kills
 
-## Next Steps
-
-1. **Validate `47` = shot count**: Check if 0x1e=30 and 0x0a=10 represent actual shots fired
-2. **Investigate stat persistence**: Why does Gun 0 show 7 hits after firing 0 shots?
-3. **Test 10**: Controlled single-player to validate shot/hit/kill semantics
-4. **Complete Test 8 analysis**: Check if `47` messages exist later in the capture
+That makes Test 9 one of the cleanest captures so far for end-of-round stat semantics in multiplayer mode.

@@ -1,166 +1,110 @@
-# Test 8: Multiplayer 4v4 Team Battle - Protocol Analysis
+# Test 8: Four-Blaster Multiplayer Team Battle - Verified Analysis
 
-## Test Overview
-- **Scenario**: 4 guns in multiplayer team battle (2 games, 3 minutes each)
-- **Guns**: g0, g1, g2, g3 (gun_0 through gun_3 in traces)
-- **Protocol Focus**: Multiplayer gameplay sequence (message 47 shot counters)
+## Verified Scope
 
-## Key Discovery: Message 47 = Cumulative Shots Fired
+- Scenario: four connected blasters, two multiplayer team-battle rounds
+- Round 1 duration: 3 minutes (`0x00b4`)
+- Round 2 duration: 5 minutes (`0x012c`)
+- Cross-check basis: the raw notes in [test_8.md](test_8.md), plus the corrected Test 9 interpretation in [analysis.md](../test_9/analysis.md)
 
-In **BOTH** multiplayer and single-player games, message `47` is sent at end-of-game to report cumulative shots fired per gun. This is sent AFTER the `42` (close) command.
+## Corrections To The Earlier Analysis
 
-## Game Timeline
+- This is **not** a 4v4 match. It is a four-blaster team battle with two teams of two.
+- The two rounds are **not both 3 minutes**. Round 1 is 3 minutes; Round 2 is 5 minutes.
+- `47` is part of the end-of-round stat exchange, but it does **not** occur strictly after `42`. In both Test 8 and Test 9, `47` and `42` are interleaved during the round-close sequence.
+- The earlier wording `51 = gameplay polling` was too strong. Test 8 does show `51`/`5102XX`, but [protocol_definition.json](../../definition_protocol/protocol_definition.json) only supports a likely battery/status interpretation, and Test 9 does not require `51` for the round-control flow.
+- The earlier gun labels were inconsistent (`Gun 4` in a four-gun test). This analysis uses g0-g3 and the anonymized device order consistently.
 
-### Pre-Game Phase (t=0-30s)
+## Shared Multiplayer Flow Confirmed By Test 8 And Test 9
 
-Each gun connects sequentially with the same startup sequence:
+Both captures show the same multiplayer round structure:
 
-**Gun 0** (t=27s):
-- Host query: `35`
-- Gun response: `35000a020201000a020204000a` (state snapshot: level 2, upgrades)
-- Host mute: `5b00`
+1. Per-blaster setup:
+   - `49 XX YY`
+   - `4a ... [duration] ...`
+   - `5b00`
+   - `35`
+   - `35...` response
+   - `58`
+2. Round-close exchange:
+   - one or more `47 [count]` notifications from blasters
+   - host `42` close commands
+   - host `54 XX` slot queries
+   - gun `5400...XX` stat replies
 
-**Gun 1** (t=120s):
-- State: `35000a020201000a010305000a` (level 2, different upgrades)
+That common structure matters more than the exact interleaving order, which varies by blaster.
 
-**Gun 2** (t=174s):
-- State: `35000a020201000a02040a000a` (level 2)
+## Strong Findings From Test 8
 
-**Gun 3** (t=268s):
-- State: `35000a020201000a051214000a` (level 5)
+### `49 XX YY` is a host-originated multiplayer assignment packet
 
-### Game 1 Setup (t≈267s)
+Test 8 repeatedly sends `49` from host to gun during round setup, never from gun to host. Combined with the detailed slot mapping in [test_8.md](test_8.md), the best-supported interpretation is:
 
-**Slot Assignment**:
-- Host → Gun 0: `490200` (Slot 2)
-- Host → Gun 3: `490400` (Slot 4)
-- Guns 1, 2 join later
+- byte 1: slot/index
+- byte 2: team or side indicator
 
-**Game Configuration**:
-- All guns: `4a000aff00b4000000002710`
-  - Duration: `0x00b4` = 180 seconds (3 minutes) ✓
-  - Team size and other parameters encoded
+This directly contradicts the old `49 = trigger` interpretation.
 
-**Game Start**:
-- Host → All: `58` (arm/start)
+### `4a` carries round configuration, including duration
 
-### Game 1 Active Phase (t≈270-550s)
+Test 8 contains two distinct values:
 
-**Status Polling** (continuous):
-- Host polls with `51`
-- Guns respond with `5102XX` status words
-- **NO trigger events** sent by guns during active play
+- `4a000aff00b4000000002710` for Round 1 (`0x00b4 = 180s`)
+- `4a000aff012c000000002710` for Round 2 (`0x012c = 300s`)
 
-### Game 1 End (t≈564s)
+This is one of the strongest packet-level findings in the repo.
 
-**Close Session**:
-- Host → Guns: `42` (session close)
+### `58` is the per-blaster arm/start command
 
-**Message 47 - Cumulative Shots Fired** (t≈564s):
-- Gun 3 (bb:bb:bb:bb:bb:03): `470008` → **0x08 = 8 decimal** shots fired
-- Gun 4 (bb:bb:bb:bb:bb:04): `47000f` → **0x0f = 15 decimal** shots fired
-- Gun 1 (bb:bb:bb:bb:bb:01): `470000` → 0 shots
-- Gun 2 (bb:bb:bb:bb:bb:02): `470000` → 0 shots
+It always appears after setup and snapshot exchange, immediately before the round begins for that blaster.
 
-**Stat Slot Query** (follows message 47):
-- Host → Guns: `5402`, `5403`, `5404`, ... (slot sweep)
-- Gun responses: `5400[hits][kills][status]`
+### `47` is an end-of-round aggregate shot counter
 
-### Game 2 Setup (t≈900s)
+Test 8 alone suggested this strongly; Test 9 makes it much harder to dispute.
 
-**Slot Assignment**:
-- Host → Gun 0: `490300` (Slot 3)
-- Host → Gun 1: `490301` (Slot 3, alternate form)
+Observed Test 8 values:
 
-**Game Configuration**: Same `4a000aff00b4000000002710` (3 min)
+- Round 1: `470008`, `47000f`, `470000`, `470000`
+- Round 2: `47000d`, `470014`, `470000`, `470000`
 
-**Game Start**: `58`
+These are consistent with the handwritten gameplay notes in [test_8.md](test_8.md), allowing for approximate human note-taking and multiplayer IR double-registration.
 
-### Game 2 Active Phase (t≈900-1240s)
+### `54` is the end-of-round per-slot stat response family
 
-Same pattern as Game 1: polling, no trigger events
+Test 8 is noisier than Test 9 because multiple players and overlapping IR hits make attribution harder, but the pattern is still clear:
 
-### Game 2 End (t≈1252s)
+- host sends `54 02`, `54 03`, `54 04`, `54 05`
+- guns answer with `5400...02`, `5400...03`, `5400...04`, `5400...05`
 
-**Close Session**: `42`
+Test 9 then confirms that the middle bytes in non-zero `54` replies are hit and kill totals. That means Test 8 should be read as the same structure, just with more ambiguous multiplayer interactions.
 
-**Message 47 - Cumulative Shots** (t≈1252s):
-- Gun 3 (bb:bb:bb:bb:bb:03): `47000d` → **0x0d = 13 decimal** shots fired
-- Gun 1 (bb:bb:bb:bb:bb:01): `470014` → **0x14 = 20 decimal** shots fired
-- Gun 2 (bb:bb:bb:bb:bb:02): `470000` → 0 shots
-- Gun 4 (bb:bb:bb:bb:bb:04): `470000` → 0 shots
+## What Test 8 Does And Does Not Prove
 
-**Stat Slot Query**: Slot sweep follows
+### Strongly supported
 
-## Protocol Message Analysis
+- multiplayer setup uses `49`, `4a`, `5b`, `35`, `58`
+- end-of-round stats use `47`, `42`, `54`
+- `47` is per-blaster round aggregate, not a live trigger packet
+- `54` replies are keyed by queried slot/index
 
-### Message 47: Cumulative Shot Counter (CONFIRMED)
+### Not proven by Test 8 alone
 
-**Format**: `47 [high_byte] [low_byte]`
+- exact semantics of every `51XXYY` state value
+- exact byte naming inside `49 XX YY`
+- exact per-player reconstruction of every overlapping hit in the four-blaster rounds
 
-**Content**: Total shots fired by this gun during the game session
+## Final Combined Interpretation
 
-**When Sent**: At game end, AFTER `42` (close), BEFORE `54` (slot queries)
+Using Test 8 and Test 9 together:
 
-**Evidence**:
-- Game 1: Guns fired 8, 15, 0, 0 shots → guns that shot sent non-zero values
-- Game 2: Guns fired 13, 20, 0, 0 shots → consistent per-gun pattern
-- Always paired with game end sequence
+- Test 8 establishes the full multiplayer packet families across four blasters and two round lengths.
+- Test 9 provides the cleanest correlation between packet values and handwritten results.
+- Therefore the strongest shared multiplayer interpretation is: `49` = multiplayer participant assignment.
+- `4a` = round configuration, including duration.
+- `58` = start/arm.
+- `47` = shots fired in the completed round.
+- `54` = hit/kill stats for the queried slot/index.
+- `51` = separate battery/status-style exchange, not needed to explain the multiplayer round flow.
 
-**Distinction**:
-- `47`: **Shots fired** (attempt count)
-- `54`: **Hits and kills** (effectiveness metrics)
-
-Example interpretation:
-- Gun 3: Fired 8 shots in Game 1, scored X hits and Y kills
-- Gun 1: Fired 0 shots in Game 1, but still reports stat matrix for team
-
-### Full Message Sequence
-
-| Message | Direction | Purpose | Timing |
-|---------|-----------|---------|--------|
-| `35` | ← | State query response | Connection |
-| `5b00` | → | Volume mute | Setup |
-| `49 XX YY` | → | Slot assignment | Pre-game |
-| `4a 000aff...` | → | Game config | Pre-game |
-| `57` | → | Config apply | Pre-game |
-| `58` | → | Game arm/start | Game start |
-| `51` | → | Status poll | During game |
-| `5102XX` | ← | Status response | During game |
-| `42` | → | Session close | Game end |
-| `47 XXYY` | ← | **Shots fired** | Game end |
-| `54 XX` | → | Slot query | Game end |
-| `5400...` | ← | Slot stats (hits/kills) | Game end |
-
-### Shots Fired per Gun (Both Games)
-
-| Gun | Game 1 | Game 2 | Notes |
-|-----|--------|--------|-------|
-| Gun 0 | Joining later | 0 shots | Low participation |
-| Gun 1 | 0 shots | 20 shots | Active in Game 2 |
-| Gun 2 | 0 shots | 0 shots | Minimal participation |
-| Gun 3 | 8 shots | 13 shots | Most active overall |
-| Gun 4 | 15 shots | 0 shots | Active in Game 1 only |
-
-## Confidence Ratings
-
-| Field | Confidence | Notes |
-|-------|-----------|-------|
-| Slot assignment (`49 XX YY`) | **STRONG** | Clear pattern in 2 games |
-| Game duration (`4a ...00b4...`) | **STRONG** | 0x00b4 = 180s = 3min ✓ |
-| Status polling (`51`) | **STRONG** | Continuous during play |
-| Session close (`42`) | **STRONG** | Marks game end |
-| Message `47` = shots fired | **VERY STRONG** | Confirmed in both games with correlated values |
-| Message `47` timing | **VERY STRONG** | Always at game end after `42` |
-| Slot stat format (`54`) | **STRONG** | Hits/kills/status structure clear |
-
-## Conclusion
-
-Test 8 confirms that **message 47 is a cumulative shot counter** sent at the end of each game session. Combined with Test 9 evidence, this establishes:
-
-1. **No real-time trigger/reload events** are sent during active multiplayer gameplay
-2. **Game statistics are aggregated** and sent only at session end
-3. **Shot count (`47`) is sent before slot stats (`54`)** in the end-of-game sequence
-
-This reduces the protocol complexity and explains why individual shot/reload packets don't appear in the captures.
+This combined reading should be treated as the current best-supported multiplayer model for Tests 8 and 9.
 

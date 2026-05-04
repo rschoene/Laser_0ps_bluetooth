@@ -217,14 +217,117 @@
       "payload_pattern": "51 XX YY",
       "notes": [
         "16-bit status word drifts over time.",
-        "Likely contains battery/status component; polarity not yet proven."
+        "Likely contains battery/status component; polarity not yet proven.",
+        "Observed during connection and monitoring phases in Test 8.",
+        "Not required for the core multiplayer round-control flow seen in Tests 8 and 9."
       ]
     },
-    "trigger": {
+    "multiplayer_assignment": {
       "id_hex": "49",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "payload_pattern": "49 SS TT",
+      "fields": [
+        {
+          "name": "slot_index",
+          "index": 1,
+          "symbol": "SS",
+          "confidence": "high"
+        },
+        {
+          "name": "team_or_side",
+          "index": 2,
+          "symbol": "TT",
+          "confidence": "medium_high"
+        }
+      ],
+      "notes": [
+        "Host-originated setup packet seen in multiplayer Tests 8 and 9.",
+        "Previously misclassified as a trigger packet.",
+        "Exact naming of the final byte is still inferred, but slot/team-style semantics fit both captures."
+      ]
+    },
+    "multiplayer_game_config": {
+      "id_hex": "4a",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "payload_pattern": "4a 00 0a ff DD DD 00 00 00 00 27 10",
+      "fields": [
+        {
+          "name": "duration_seconds_be",
+          "indexes": [4, 5],
+          "symbol": "DD DD",
+          "confidence": "very_high"
+        }
+      ],
+      "observed_values": [
+        "4a000aff00b4000000002710",
+        "4a000aff012c000000002710"
+      ],
+      "notes": [
+        "00b4 = 180 seconds (3 minutes) in Tests 8 and 9.",
+        "012c = 300 seconds (5 minutes) in Test 8."
+      ]
+    },
+    "round_start": {
+      "id_hex": "58",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "notes": [
+        "Per-blaster arm/start command.",
+        "Seen after multiplayer setup and startup snapshot exchange in Tests 8 and 9."
+      ]
+    },
+    "round_shot_counter": {
+      "id_hex": "47",
       "direction": "gun_to_host",
       "handle": "0x0023",
-      "confidence": "high"
+      "payload_pattern": "47 HH LL",
+      "fields": [
+        {
+          "name": "shots_fired_be",
+          "indexes": [1, 2],
+          "symbol": "HH LL",
+          "confidence": "very_high"
+        }
+      ],
+      "notes": [
+        "End-of-round aggregate counter.",
+        "Strongly supported by Test 9: 001e = 30 shots, 000a = 10 shots, matching handwritten notes exactly.",
+        "Also present in Test 8 during the same multiplayer round-close exchange."
+      ]
+    },
+    "round_slot_stats": {
+      "id_hex": "54",
+      "direction": "bidirectional",
+      "request_handle": "0x0026",
+      "response_handle": "0x0023",
+      "request_pattern": "54 SS",
+      "response_pattern": "54 00 HH KK SS",
+      "fields": [
+        {
+          "name": "hits",
+          "index": 2,
+          "symbol": "HH",
+          "confidence": "very_high"
+        },
+        {
+          "name": "kills",
+          "index": 3,
+          "symbol": "KK",
+          "confidence": "very_high"
+        },
+        {
+          "name": "slot_index_echo",
+          "index": 4,
+          "symbol": "SS",
+          "confidence": "high"
+        }
+      ],
+      "notes": [
+        "Host queries a slot/index with 54 SS.",
+        "Test 9 verifies HH/KK against handwritten results: 0a/02 and 07/01 match 10 hits/2 kills and 7 hits/1 kill."
+      ]
     },
     "reload_marker_a": {
       "id_hex": "52",
@@ -297,7 +400,11 @@
     "session_close": {
       "id_hex": "42",
       "direction": "host_to_gun",
-      "handle": "0x0026"
+      "handle": "0x0026",
+      "notes": [
+        "Part of the multiplayer round-close exchange.",
+        "Interleaves with 47 and 54 traffic rather than occurring at a single fixed position."
+      ]
     }
   },
   "observed_mode_shifts": [

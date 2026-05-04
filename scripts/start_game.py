@@ -13,8 +13,8 @@ Observed sequence at start of every AR game session (host → gun, handle 0x0026
   36 ...        config write
   57            apply/commit
   44 01         game mode init flag (inferred)
-  49 01 00      game option toggle (inferred)
-  4a 00 00 00 00 00 00 00 00 00 13 88   timed game setup — 0x1388=5000 (inferred)
+  49 01 00      multiplayer_assignment: slot=01 team=00 (confirmed Tests 8–9; also present in Test 2)
+  4a 00 00 00 00 00 00 00 00 00 13 88   multiplayer_game_config: duration bytes at [4,5]; 0x1388=5000 (confirmed Tests 8–9)
   41 13 88      setup parameter paired with 4a (inferred)
   3b 07         setup parameter (inferred)
   39 0a         setup parameter (inferred)
