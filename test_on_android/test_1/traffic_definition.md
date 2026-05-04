@@ -64,12 +64,12 @@ Byte layout:
 |---|---|---|---|
 | 0 | `35` | startup snapshot message id | Confirmed |
 | 1 | `00` | fixed/reserved | Confirmed |
-| 2 | `0a` | fixed delimiter or marker | Inferred |
+| 2 | `0a` | fixed in this snapshot; not a live health/ammo field | Confirmed |
 | 3 | `02` | fixed protocol/group field | Inferred |
 | 4 | `02` | fixed protocol/group field | Inferred |
 | 5 | `01` | startup subcommand / mode | Inferred |
 | 6 | `00` | fixed/reserved | Confirmed |
-| 7 | `0a` | fixed delimiter or marker | Inferred |
+| 7 | `0a` | fixed in this snapshot; not a live health/ammo field | Confirmed |
 | 8 | `LL` | level, or level echo when populated | High for guns 0/1/3 |
 | 9 | `NN` | name part 1 / option field A | Inferred |
 | 10 | `MM` | name part 2 / option field B | Inferred |
@@ -87,6 +87,7 @@ Notes:
 
 - Gun 2 reports `00 00 00` in bytes 8..10 at startup, which matches it appearing unnamed in the app.
 - Guns 0, 1, and 3 appear to echo a meaningful value at byte 8 that matches the configured level.
+- Bytes 2 and 7 remain `0a` even at levels 4 and 5 (confirmed in Tests 6 and 7), whereas the corresponding positions in the `36...` form C config write change to `0d`/`0f` at level 4+.  They do not encode current health or ammo.
 
 ### 3. Host volume set (initial persisted value)
 
