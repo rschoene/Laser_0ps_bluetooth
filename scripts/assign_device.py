@@ -25,7 +25,7 @@ Name-space limits (IMPORTANT):
   full name list size.
 
 Usage:
-    python assign_device.py --address E4:FE:7C:AA:11:22 \\
+    python assign_device.py --address BLASTER_ADDR \
                             --level 3 \\
                             --name-a 17 \\
                             --name-b 19
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--address", required=True,
-        help="BLE address of the blaster (e.g. E4:FE:7C:AA:11:22)",
+        help="BLE address of the blaster (e.g. BLASTER_ADDR)",
     )
     parser.add_argument(
         "--level", type=int, required=True,

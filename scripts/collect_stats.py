@@ -14,8 +14,8 @@ Results are printed as raw observed values.  If --output is given, raw
 per-type counter lists are saved as JSON for further analysis.
 
 Usage:
-    python collect_stats.py --address E4:FE:7C:AA:11:22
-    python collect_stats.py --address E4:FE:7C:AA:11:22 --output results.json
+    python collect_stats.py --address BLASTER_ADDR
+    python collect_stats.py --address BLASTER_ADDR --output results.json
 """
 
 import argparse

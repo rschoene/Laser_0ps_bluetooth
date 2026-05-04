@@ -96,19 +96,19 @@ python scan.py
 
 ```bash
 # Level 3, name parts at observed byte values 0x17 and 0x19
-python assign_device.py --address E4:FE:7C:AA:11:22 --level 3 --name-a 23 --name-b 25
+python assign_device.py --address BLASTER_ADDR --level 3 --name-a 23 --name-b 25
 ```
 
 ### Send game-start command sequence
 
 ```bash
-python start_game.py --address E4:FE:7C:AA:11:22
+python start_game.py --address BLASTER_ADDR
 ```
 
 ### Collect end-of-game statistics
 
 ```bash
-python collect_stats.py --address E4:FE:7C:AA:11:22 --output results.json
+python collect_stats.py --address BLASTER_ADDR --output results.json
 ```
 
 ### Run the low-level BLE example client
@@ -131,6 +131,10 @@ This repository has been sanitized for public sharing:
 - Real device MAC addresses were replaced with stable fake values in all `filtered_.log` files.
 - Replacement map is documented in `test_on_android/devices.md` (git-ignored).
 - Raw Bluetooth snoop files (`btsnoop_hci.log`) are git-ignored.
+- New captures can be sanitized with `scripts/anonymize_btsnoop.py`, which:
+  - extracts the NerfV device addresses directly from the raw `btsnoop_hci.log`
+  - applies the repo filter `(!bthci_acl) || ((src/dst == nerfv_1) || ... )`
+  - anonymizes the phone, NerfV devices, and any other Bluetooth addresses left in non-ACL frames
 
 Current sanitized mapping labels used in docs and notes:
 
@@ -139,6 +143,15 @@ Current sanitized mapping labels used in docs and notes:
 - `gun_1`
 - `gun_2`
 - `gun_3`
+
+Example:
+
+```bash
+python3 scripts/anonymize_btsnoop.py \
+  --input test_on_android/test_8/btsnoop_hci.log \
+  --output test_on_android/test_8/filtered_.log \
+  --force
+```
 
 ---
 

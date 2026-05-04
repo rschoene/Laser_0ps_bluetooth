@@ -21,6 +21,21 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
 # ---------------------------------------------------------------------------
+# BLE identity constants (confirmed from HCI advertisement captures)
+# ---------------------------------------------------------------------------
+
+# All LaserOps blasters advertise this exact device name.
+DEVICE_NAME = "NerfV"
+
+# 128-bit primary service UUID (advertised in AD type 0x07).
+# Use this for reliable filtering — the device name alone may not be unique.
+SERVICE_UUID     = "073e1435-85d1-455c-97cd-0b8262f20eac"
+
+# Characteristic UUIDs (confirmed from GATT service discovery)
+NOTIFY_CHAR_UUID = "073e1382-85d1-455c-97cd-0b8262f20eac"  # Notify + Read
+WRITE_CHAR_UUID  = "073e1383-85d1-455c-97cd-0b8262f20eac"  # Write Without Response + Read
+
+# ---------------------------------------------------------------------------
 # ATT handle constants (confirmed from captures)
 # ---------------------------------------------------------------------------
 
@@ -468,19 +483,31 @@ class LaserOpsDevice:
 
 async def scan_for_devices(
     timeout: float = 10.0,
-    name_contains: str = "laser",
+    name_filter: str = DEVICE_NAME,
+    use_service_uuid: bool = True,
 ) -> list[BLEDevice]:
     """
-    Return BLE devices whose advertisement name contains ``name_contains``
-    (case-insensitive).
+    Return nearby LaserOps blasters.
 
-    The official app uses "laser" as the search term in its own scan logic.
-    The exact advertisement name format is not confirmed from captures.
+    By default scans for the advertised service UUID (most reliable). Falls
+    back to a case-insensitive device-name substring match when
+    ``use_service_uuid`` is False.
+
+    All LaserOps blasters advertise:
+      - Device Name (AD type 0x09): "NerfV"
+      - 128-bit Service UUID (AD type 0x07): 073e1435-85d1-455c-97cd-0b8262f20eac
     """
-    devices = await BleakScanner.discover(timeout=timeout)
-    needle = name_contains.lower()
-    return [
-        d for d in devices
-        if d.name and needle in d.name.lower()
-    ]
+    if use_service_uuid:
+        devices = await BleakScanner.discover(
+            timeout=timeout,
+            service_uuids=[SERVICE_UUID],
+        )
+        return list(devices)
+    else:
+        devices = await BleakScanner.discover(timeout=timeout)
+        needle = name_filter.lower()
+        return [
+            d for d in devices
+            if d.name and needle in d.name.lower()
+        ]
 

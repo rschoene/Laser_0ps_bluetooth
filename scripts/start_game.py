@@ -20,8 +20,8 @@ Observed sequence at start of every AR game session (host → gun, handle 0x0026
   39 0a         setup parameter (inferred)
 
 Usage:
-    python start_game.py --address E4:FE:7C:AA:11:22
-    python start_game.py --address E4:FE:7C:AA:11:22 --level 3 --name-a 17 --name-b 19
+    python start_game.py --address BLASTER_ADDR
+    python start_game.py --address BLASTER_ADDR --level 3 --name-a 17 --name-b 19
 """
 
 import argparse

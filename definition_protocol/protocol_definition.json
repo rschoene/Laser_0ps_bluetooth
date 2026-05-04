@@ -10,6 +10,62 @@
       "Device addresses are runtime configuration and intentionally not embedded here."
     ]
   },
+  "advertisement": {
+    "device_name": "NerfV",
+    "device_name_ad_type": "0x09",
+    "service_uuid_128": "073e1435-85d1-455c-97cd-0b8262f20eac",
+    "service_uuid_ad_type": "0x07",
+    "notes": [
+      "All guns advertise the identical device name 'NerfV'.",
+      "The 128-bit service UUID is more reliable for filtering than the name.",
+      "Confirmed from btsnoop HCI advertisement event frames across multiple test captures."
+    ]
+  },
+  "gatt_services": {
+    "primary_service": {
+      "uuid": "073e1435-85d1-455c-97cd-0b8262f20eac",
+      "handle_range_start": "0x0021",
+      "characteristics": {
+        "notify": {
+          "uuid": "073e1382-85d1-455c-97cd-0b8262f20eac",
+          "declaration_handle": "0x0022",
+          "value_handle": "0x0023",
+          "properties": ["Notify", "Read"],
+          "role": "gun_to_host_notifications"
+        },
+        "write": {
+          "uuid": "073e1383-85d1-455c-97cd-0b8262f20eac",
+          "declaration_handle": "0x0025",
+          "value_handle": "0x0026",
+          "properties": ["Write without Response", "Read"],
+          "role": "host_to_gun_commands"
+        }
+      }
+    },
+    "other_services": [
+      {
+        "uuid": "0x1800",
+        "name": "Generic Access Profile",
+        "handle_range_start": "0x0001"
+      },
+      {
+        "uuid": "0x1801",
+        "name": "Generic Attribute Profile",
+        "handle_range_start": "0x0008"
+      },
+      {
+        "uuid": "0x180a",
+        "name": "Device Information",
+        "handle_range_start": "0x0014"
+      },
+      {
+        "uuid": "23d1bcea-5f78-2315-deef-121230150000",
+        "name": "Unknown custom service",
+        "handle_range_start": "0x000c",
+        "notes": "Purpose not yet determined."
+      }
+    ]
+  },
   "transport": {
     "host_to_gun": {
       "att_opcode": "0x52",
@@ -262,6 +318,10 @@
     }
   ],
   "python_hints": {
+    "scan_by_service_uuid": "073e1435-85d1-455c-97cd-0b8262f20eac",
+    "scan_by_name": "NerfV",
+    "notify_char_uuid": "073e1382-85d1-455c-97cd-0b8262f20eac",
+    "write_char_uuid": "073e1383-85d1-455c-97cd-0b8262f20eac",
     "expected_write_handle": "0x0026",
     "expected_notify_handle": "0x0023",
     "startup_write_sequence": [
@@ -269,6 +329,7 @@
       "5b00"
     ],
     "notes": [
+      "Prefer scanning by service UUID over device name — all guns share the same name 'NerfV'.",
       "Use notifications on handle 0x0023 and parse by prefix.",
       "Do not assume every inferred field is stable across firmware/app versions."
     ]
