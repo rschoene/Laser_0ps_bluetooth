@@ -63,43 +63,34 @@ def require_tshark() -> None:
 
 
 def discover_nerfv_addresses(input_path: Path) -> list[str]:
-    """Best-effort discovery of NerfV device addresses from the raw capture."""
+    """Discover NerfV device addresses by searching for 'NerfV' string in ATT responses.
+    
+    Finds devices that respond with 'NerfV' in their device name characteristic
+    during GATT service discovery.
+    """
     candidates: list[str] = []
-
-    commands = [
-        [
-            "tshark", "-r", str(input_path),
-            "-T", "fields",
-            "-e", "bthci_evt.bd_addr",
-            "-e", "btcommon.eir_ad.entry.device_name",
-            "-E", "separator=|",
-        ],
-        [
-            "tshark", "-r", str(input_path),
-            "-T", "fields",
-            "-e", "bthci_evt.bd_addr",
-            "-e", "btcommon.eir_ad.entry.uuid_128",
-            "-E", "separator=|",
-        ],
-        [
-            "tshark", "-r", str(input_path),
-            "-T", "fields",
-            "-e", "bthci_acl.src.bd_addr",
-            "-e", "btatt.uuid128",
-            "-E", "separator=|",
-        ],
-    ]
-
-    for command in commands:
-        result = run_command(command, check=False)
-        if result.returncode not in (0, 1):
-            continue
+    
+    # Extract all ATT packets and look for "NerfV" string responses
+    result = run_command([
+        "tshark", "-r", str(input_path),
+        "-Y", "btatt",
+        "-T", "text",
+    ], check=False)
+    
+    if result.returncode in (0, 1):
+        current_mac = None
         for line in result.stdout.splitlines():
-            lower = line.lower()
-            if NERFV_NAME.lower() in lower or NERFV_SERVICE_UUID.replace("-", "") in lower:
-                for mac in MAC_RE.findall(line):
-                    candidates.append(mac.lower())
+            # Extract MAC address from Bluetooth packet headers
+            if "→" in line or "← " in line:  # Packet direction indicators
+                mac_match = MAC_RE.search(line)
+                if mac_match:
+                    current_mac = mac_match.group(0).lower()
+            
+            # Look for "NerfV" in ATT data
+            if "NerfV" in line and current_mac:
+                candidates.append(current_mac)
 
+    # Deduplicate while preserving order
     deduped: list[str] = []
     seen: set[str] = set()
     for mac in candidates:
@@ -109,17 +100,20 @@ def discover_nerfv_addresses(input_path: Path) -> list[str]:
     return deduped
 
 
-def build_display_filter(nerfv_addresses: list[str]) -> str:
+def filter_capture(input_path: Path, output_path: Path, nerfv_addresses: list[str]) -> str:
+    """Filter capture to include non-ACL packets and ACL traffic involving NerfV devices."""
     acl_terms: list[str] = []
     for address in nerfv_addresses:
         acl_terms.append(f"(bthci_acl.src.bd_addr == {address})")
         acl_terms.append(f"(bthci_acl.dst.bd_addr == {address})")
-    joined = " || ".join(acl_terms)
-    return f"(!bthci_acl) || ({joined})"
-
-
-def filter_capture(input_path: Path, output_path: Path, nerfv_addresses: list[str]) -> str:
-    display_filter = build_display_filter(nerfv_addresses)
+    
+    if not acl_terms:
+        # No NerfV devices: keep all non-ACL traffic
+        display_filter = "!bthci_acl"
+    else:
+        joined = " || ".join(acl_terms)
+        display_filter = f"(!bthci_acl) || ({joined})"
+    
     run_command([
         "tshark",
         "-r", str(input_path),
@@ -258,7 +252,7 @@ def main() -> int:
         nerfv_addresses = discover_nerfv_addresses(staged_input_path)
         if not nerfv_addresses:
             raise SystemExit(
-                "could not auto-discover NerfV addresses from the raw btsnoop_hci.log"
+                "could not auto-discover NerfV devices (no devices named 'NerfV' with ACL traffic found)"
             )
 
         filtered_display = filter_capture(staged_input_path, filtered_path, nerfv_addresses)
