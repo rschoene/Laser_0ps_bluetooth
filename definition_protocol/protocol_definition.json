@@ -135,7 +135,10 @@
       "id_hex": "35",
       "direction": "gun_to_host",
       "handle": "0x0023",
-      "payload_pattern": "35 00 0a 02 02 01 00 0a LL NN MM 00 0a",
+      "payload_patterns": [
+        "35 00 0a 02 02 01 00 0a LL NN MM 00 0a",
+        "35 00 12 01 02 00 01 0a LL NN MM 00 0a"
+      ],
       "length_bytes": 13,
       "fields": [
         {
@@ -162,6 +165,11 @@
           "symbol": "MM",
           "confidence": "inferred"
         }
+      ],
+      "notes": [
+        "Standard pattern (bytes 2-6: 0a 02 02 01 00) seen in Tests 1-9.",
+        "Alternate pattern (bytes 2-6: 12 01 02 00 01) seen in Test 10 with a different gun profile.",
+        "Level/name fields are at the same indexes in both patterns."
       ]
     },
     "config_write": {
@@ -171,7 +179,10 @@
       "patterns": [
         "36 00 0a 02 02 01 00 0a LL NN MM 00 0a",
         "36 00 0a 02 02 03 00 0a LL NN MM 00 04",
-        "36 00 0d 03 02 03 00 0f LL NN MM 00 VV"
+        "36 00 0d 03 02 03 00 0f LL NN MM 00 VV",
+        "36 00 12 01 02 00 01 0a LL NN MM 00 0a",
+        "36 00 12 01 03 03 01 0a LL NN MM 00 04",
+        "36 00 12 02 03 03 01 0a LL NN MM 00 04"
       ],
       "fields": [
         {
@@ -195,7 +206,8 @@
       ],
       "notes": [
         "Byte deltas beyond LL vary across progression/upgrades.",
-        "Seen trailing variants include 04, 03, and 0a in different phases."
+        "Seen trailing variants include 04, 03, and 0a in different phases.",
+        "Alternate gun profile (Test 10) uses bytes 2-6: 12 01 02 00 01 or 12 01 03 03 01 or 12 02 03 03 01."
       ]
     },
     "apply_commit": {
@@ -339,13 +351,25 @@
       "id_hex_prefix": "31",
       "direction": "gun_to_host",
       "handle": "0x0023",
+      "payload_pattern": "31 AA",
+      "fields": [
+        {
+          "name": "ammo_count",
+          "index": 1,
+          "symbol": "AA",
+          "meaning": "magazine/clip size after reload (decimal = ammo count)",
+          "confidence": "high"
+        }
+      ],
       "observed_values": [
         "310a",
-        "310d"
+        "310d",
+        "3112"
       ],
       "notes": [
         "Pairs 1:1 with payload 52 in gameplay captures.",
-        "310a seen in older mode; 310d seen in later progression mode."
+        "310a (0x0a=10) seen in older mode; 310d (0x0d=13) in later progression; 3112 (0x12=18) in Test 10 alternate gun profile.",
+        "Second byte encodes the ammo-per-reload count for this gun/level configuration."
       ]
     },
     "ammo_state": {
@@ -371,31 +395,89 @@
       },
       "semantics": "continuous volume intensity"
     },
-    "end_stat_request": {
+    "damage_apply_request": {
       "id_hex_prefix": "5a3f01",
       "direction": "host_to_gun",
       "handle": "0x0026",
-      "payload_pattern": "5a3f01TT0000",
-      "observed_types_hex": [
+      "payload_pattern": "5a 3f 01 TT 00 00",
+      "fields": [
+        {
+          "name": "damage_amount",
+          "index": 3,
+          "symbol": "TT",
+          "meaning": "amount of damage to apply to the gun's HP pool",
+          "confidence": "high"
+        }
+      ],
+      "observed_damage_values_hex": [
         "01",
         "02",
         "06"
+      ],
+      "notes": [
+        "Sent by the host after each shot that hits this gun.",
+        "TT=01 → 1 damage; TT=02 → 2 damage; TT=06 → 6 damage (Level 5 heavy blaster in Test 7).",
+        "Always followed by a damage_apply_response from the gun.",
+        "Previously misidentified as a generic stat request."
       ]
     },
-    "end_stat_counter": {
+    "damage_apply_response": {
       "id_hex_prefix": "30013f",
       "direction": "gun_to_host",
       "handle": "0x0023",
-      "payload_pattern": "30013fTTNN",
-      "semantics": {
-        "TT": "stat class/type",
-        "NN": "counter/progress (generally descends to 00)"
-      }
+      "payload_pattern": "30 01 3f TT NN",
+      "fields": [
+        {
+          "name": "damage_amount_echo",
+          "index": 3,
+          "symbol": "TT",
+          "meaning": "echo of the damage amount that was applied",
+          "confidence": "high"
+        },
+        {
+          "name": "remaining_hp",
+          "index": 4,
+          "symbol": "NN",
+          "meaning": "HP remaining after applying TT damage; descends to 00 on kill",
+          "confidence": "high"
+        }
+      ],
+      "notes": [
+        "Gun emits this immediately after processing a damage_apply_request.",
+        "NN decrements by TT each hit; final response has NN=00 (gun destroyed).",
+        "Validated across Tests 2, 3, 6, 7, 10 with exact HP sequences matching test notes.",
+        "Previously misidentified as a generic stat counter."
+      ]
     },
     "end_stat_terminal": {
       "id_hex": "3e0100",
       "direction": "gun_to_host",
       "handle": "0x0023"
+    },
+    "ingame_control": {
+      "id_hex_prefix": "37",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "payload_pattern": "37 CC 01 00",
+      "fields": [
+        {
+          "name": "control_byte",
+          "index": 1,
+          "symbol": "CC",
+          "meaning": "mode/intensity byte; value tied to gun profile/level",
+          "confidence": "medium"
+        }
+      ],
+      "observed_values": [
+        "370a0100",
+        "370e0100",
+        "37040100"
+      ],
+      "notes": [
+        "370a0100 and 370e0100 seen in standard gun profiles.",
+        "37040100 seen in Test 10 alternate gun profile (also uses 3112 reload and 35001201... startup).",
+        "Exact role of CC not confirmed; may relate to fire rate or mode."
+      ]
     },
     "session_close": {
       "id_hex": "42",
@@ -409,19 +491,38 @@
   },
   "observed_mode_shifts": [
     {
-      "older_mode": [
+      "profile": "standard_older",
+      "markers": [
         "310a",
         "3202xx",
         "320axx",
         "370a0100"
       ],
-      "newer_mode": [
+      "confidence": "medium"
+    },
+    {
+      "profile": "standard_newer",
+      "markers": [
         "310d",
         "3203xx",
         "320exx",
         "370e0100"
       ],
       "confidence": "medium"
+    },
+    {
+      "profile": "alternate_gun_test10",
+      "markers": [
+        "3112",
+        "370a0100",
+        "startup_bytes_2_6: 12 01 02 00 01"
+      ],
+      "confidence": "medium",
+      "notes": [
+        "Observed exclusively in Test 10.",
+        "Startup/config fixed bytes differ from standard profile.",
+        "Reload count is 18 (0x12) instead of 10 or 13."
+      ]
     }
   ],
   "python_hints": {

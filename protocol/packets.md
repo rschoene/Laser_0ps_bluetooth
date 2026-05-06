@@ -37,7 +37,7 @@ Length: 1 byte.  **Confidence: confirmed**.  Present in every test (Tests 1–9)
 
 Length: 13 bytes.  **Confidence: confirmed structure; field names inferred**.
 
-Observed in every test (Tests 1–9).  The level byte `LL` at position 8 tracks the persistent gun level across sessions.
+Observed in every test. The level byte `LL` at position 8 tracks the persistent gun level across sessions, but bytes 2–7 are now known to be template-dependent rather than globally fixed.
 
 Observed examples (Test 1 — four guns):
 
@@ -59,6 +59,12 @@ Test 9 (blaster A level 2, blaster B level 5 — multiplayer startup snapshots i
 ```
 35 00 0a 02 02 01 00 0a  02  02  04  00  0a   ← blaster A
 35 00 0a 02 02 01 00 0a  05  12  14  00  0a   ← blaster B
+```
+
+Test 10 (alternate profile template, same `LL NN MM` positions):
+
+```
+35 00 12 01 02 00 01 0a  02  27  04  00  0a
 ```
 
 ---
@@ -116,6 +122,16 @@ Test 7 — level-5 writes (same gun, later phase of capture):
 36 00 0a 02 02 03 00 0a  05  12  14  00  04
 36 00 0d 03 02 03 00 0f  05  12  14  00  03
 ```
+
+Test 10 — alternate profile template family:
+
+```
+36 00 12 01 02 00 01 0a  02  27  04  00  0a
+36 00 12 01 03 03 01 0a  02  27  04  00  04
+36 00 12 02 03 03 01 0a  02  27  04  00  04
+```
+
+These values preserve the same level/name positions (`LL NN MM`) while changing the preceding framing bytes.
 
 ---
 
@@ -216,11 +232,13 @@ First byte, then ~0.5 s later second byte:
 52          ← reload marker A
 31 0a       ← reload marker B (older mode, Tests 2–6, levels 1–4)
 31 0d       ← reload marker B (newer mode, Test 7, level 5)
+31 12       ← reload marker B (alternate profile, Test 10, 18 ammo)
 ```
 
 Tests 2, 5, 6: `52` + `310a` pairs observed (reload confirmed by test notes).
 Test 3: no `52` or `310a` observed — test was shoot-only, no manual reload.  This negative result strengthens the reload interpretation.
-Test 7: `52` + `310d` pairs observed.  The shift from `0a` (10) to `0d` (13) is consistent with a Munition upgrade increasing the magazine size.  **Confidence: inferred**.
+Test 7: `52` + `310d` pairs observed.  The shift from `0a` (10) to `0d` (13) is consistent with a Munition upgrade increasing the magazine size.
+Test 10: `52` + `3112` pairs observed.  The `0x12 = 18` value matches the handwritten note that this gun starts with 18 ammo.  **Confidence: inferred-high**.
 
 ### Ammo / shot state (gun → host)
 
@@ -238,6 +256,13 @@ Newer mode (Test 7):
 32 0e XX
 ```
 
+Alternate profile (Test 10):
+
+```
+32 02 XX
+32 04 XX    (observed as `320409`)
+```
+
 `XX` appears to be a descending counter.  **Confidence: medium-high**.
 
 ---
@@ -247,6 +272,7 @@ Newer mode (Test 7):
 ```
 37 0a 01 00   ← older mode (Tests 2–6, 6 times in Test 2)
 37 0e 01 00   ← newer mode (Test 7)
+37 04 01 00   ← alternate profile (Test 10)
 ```
 
 Candidate meaning: reload / special-shot state transition.  **Confidence: medium**.
@@ -278,7 +304,7 @@ These stat messages are observed only in single-player mode.  They are absent fr
 5a 3f 01  TT  00 00
 ```
 
-Observed `TT` values: `01`, `02`, `06`.  Present in Tests 2–7.  **Confidence: inferred**.
+Observed `TT` values: `01`, `02`, `06`.  Present in Tests 2, 3, 5, 6, 7, 10.  Best current interpretation: `TT` is the damage amount being applied during the end-of-game health synchronization. **Confidence: high**.
 
 ### Stat counter reply (gun → host)
 
@@ -286,10 +312,19 @@ Observed `TT` values: `01`, `02`, `06`.  Present in Tests 2–7.  **Confidence: 
 30 01 3f  TT  NN
 ```
 
-`NN` descends from an upper bound down to `00`.  Upper bound observed per level:
-- Level 3 (Tests 2–3): upper bound `09`
-- Level 4 (Test 6):    upper bound `0e`
-- Level 5 (Test 7):    values `00 04 05 06 07 0e` (multi-round capture)
+Best current interpretation:
+
+- `TT` echoes the damage amount from the `5a3f...` request
+- `NN` is the remaining HP after applying that damage
+
+Representative sequences:
+
+- Test 3 / Test 10: `30013f0109` down to `30013f0100` for repeated 1-damage sync on a 10-HP gun
+- Test 6: `30013f010e` down to `30013f0100` for repeated 1-damage sync on a 15-HP gun
+- Test 2: mixed `TT=01` / `TT=02` gives `09 -> 07 -> 06 -> 04 -> 03 -> 02 -> 00`
+- Test 7: mixed `TT=01` / `TT=06` gives `0e -> 08 -> 07 -> 01 -> 00`
+
+Damage larger than remaining HP is clamped to `00`.
 
 ### End-of-game terminal marker (gun → host)
 

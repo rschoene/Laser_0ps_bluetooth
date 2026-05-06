@@ -17,13 +17,14 @@ import asyncio
 from laserops import scan_for_devices
 
 
-async def main(timeout: float, by_name: bool, name: str) -> None:
+async def main(timeout: float, by_name: bool, name: str, expected_count: int) -> None:
     method = f"name contains '{name}'" if by_name else "service UUID"
     print(f"Scanning for LaserOps devices ({timeout:.0f} s, filter: {method}) …")
     devices = await scan_for_devices(
         timeout=timeout,
         name_filter=name,
         use_service_uuid=not by_name,
+        expected_count=expected_count if expected_count > 0 else None,
     )
 
     if not devices:
@@ -52,6 +53,13 @@ if __name__ == "__main__":
         "--name", default="NerfV",
         help='Device name substring when using --by-name (default: "NerfV")',
     )
+    parser.add_argument(
+        "--expected-count", type=int, default=0,
+        help=(
+            "Stop scan early once this many matching devices are found "
+            "(default: 0 = wait full timeout)"
+        ),
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.timeout, args.by_name, args.name))
+    asyncio.run(main(args.timeout, args.by_name, args.name, args.expected_count))
 
