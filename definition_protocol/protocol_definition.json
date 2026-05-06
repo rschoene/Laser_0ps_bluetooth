@@ -514,7 +514,7 @@
       "profile": "alternate_gun_test10",
       "markers": [
         "3112",
-        "370a0100",
+        "37040100",
         "startup_bytes_2_6: 12 01 02 00 01"
       ],
       "confidence": "medium",
