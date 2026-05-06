@@ -18,13 +18,13 @@ Observed order for each gun session:
 
 1. Host sends `35` to handle `0x0026`.
 2. Gun responds with a 13-byte `35 ...` payload on handle `0x0023`.
-3. Host sends `5b 1f` to handle `0x0026`.
+3. Host sends `5b xx` to handle `0x0026`.
 
 Current interpretation:
 
 - Step 1 is a startup query or init request. Confirmed.
 - Step 2 is the gun's identity/config snapshot. Confirmed.
-- Step 3 is likely an acknowledge, confirm, or mode-enable command. Inferred.
+- Step 3 is the initial volume set to the app-persisted value. Confirmed.
 
 Example from gun 0:
 
@@ -53,7 +53,8 @@ Byte layout:
 
 - Direction: gun -> host
 - Handle: `0x0023`
-- Payload form: `35 00 0a 02 02 01 00 0a LL NN MM 00 0a`
+- Payload form (baseline): `35 00 0a 02 02 01 00 0a LL NN MM 00 0a`
+- Alternate observed form (Test 10): `35 00 12 01 02 00 01 0a LL NN MM 00 0a`
 - Length: 13 bytes
 - Meaning: gun identity/config snapshot at startup
 - Confidence: Confirmed for structure, partially inferred for field names
@@ -64,17 +65,12 @@ Byte layout:
 |---|---|---|---|
 | 0 | `35` | startup snapshot message id | Confirmed |
 | 1 | `00` | fixed/reserved | Confirmed |
-| 2 | `0a` | fixed in this snapshot; not a live health/ammo field | Confirmed |
-| 3 | `02` | fixed protocol/group field | Inferred |
-| 4 | `02` | fixed protocol/group field | Inferred |
-| 5 | `01` | startup subcommand / mode | Inferred |
-| 6 | `00` | fixed/reserved | Confirmed |
-| 7 | `0a` | fixed in this snapshot; not a live health/ammo field | Confirmed |
-| 8 | `LL` | level, or level echo when populated | High for guns 0/1/3 |
+| 2–7 | — | template-dependent framing bytes; not live health/ammo | High |
+| 8 | `LL` | level, or level echo when populated | High |
 | 9 | `NN` | name part 1 / option field A | Inferred |
 | 10 | `MM` | name part 2 / option field B | Inferred |
 | 11 | `00` | fixed/reserved | Confirmed |
-| 12 | `0a` | fixed terminator | Inferred |
+| 12 | `0a` | fixed terminator | High |
 
 Observed startup snapshots:
 
@@ -82,12 +78,14 @@ Observed startup snapshots:
 - Gun 1: `35 00 0a 02 02 01 00 0a 02 0f 0f 00 0a`
 - Gun 2: `35 00 0a 02 02 01 00 0a 00 00 00 00 0a`
 - Gun 3: `35 00 0a 02 02 01 00 0a 02 32 31 00 0a`
+- Test 10 alternate profile: `35 00 12 01 02 00 01 0a 02 27 04 00 0a`
 
 Notes:
 
 - Gun 2 reports `00 00 00` in bytes 8..10 at startup, which matches it appearing unnamed in the app.
 - Guns 0, 1, and 3 appear to echo a meaningful value at byte 8 that matches the configured level.
-- Bytes 2 and 7 remain `0a` even at levels 4 and 5 (confirmed in Tests 6 and 7), whereas the corresponding positions in the `36...` form C config write change to `0d`/`0f` at level 4+.  They do not encode current health or ammo.
+- In the baseline template, bytes 2 and 7 remain `0a` even at levels 4 and 5 (confirmed in Tests 6 and 7), whereas the corresponding positions in the `36...` form C config write change to `0d`/`0f` at level 4+. They do not encode current health or ammo.
+- Test 10 proves bytes 2–7 are not globally fixed; they are template-dependent framing bytes.
 
 ### 3. Host volume set (initial persisted value)
 
@@ -115,6 +113,7 @@ Observed startup examples:
 - Handle: `0x0026`
 - Payload form A: `36 00 0a 02 02 01 00 0a LL NN MM 00 0a`
 - Payload form B: `36 00 0a 02 02 03 00 0a LL NN MM 00 04`
+- Alternate observed forms (Test 10): `36 00 12 01 02 00 01 0a LL NN MM 00 0a`, `36 00 12 01 03 03 01 0a LL NN MM 00 04`, `36 00 12 02 03 03 01 0a LL NN MM 00 04`
 - Length: 13 bytes
 - Meaning: level + name/config write
 - Confidence: Confirmed for structure, high confidence for level byte
@@ -287,8 +286,8 @@ Observed values and current interpretation:
 | `411388` | 1 | setup parameter paired with `4a...` | Low |
 | `3b07` | 1 | setup parameter (possibly countdown/sound/game mode) | Low |
 | `390a` | 1 | setup parameter (possibly countdown/sound/game mode) | Low |
-| `5a3f01010000` | 5 | end-game/stat sync command class A | Medium |
-| `5a3f01020000` | 3 | end-game/stat sync command class B | Medium |
+| `5a3f01010000` | 5 | apply 1 damage during end-game HP synchronization | High |
+| `5a3f01020000` | 3 | apply 2 damage during end-game HP synchronization | High |
 | `42` | 1 | final session close/ack command | Low-Medium |
 
 ### New gun -> host notifications on `0x0023` (Test 2)
@@ -301,7 +300,7 @@ Observed values and current interpretation:
 | `3202xx` / `320axx` | many | per-shot ammo/counter/state update family | Medium-High |
 | `52` | 4 | reload/sound lifecycle marker part 1 | Medium |
 | `310a` | 4 | reload/sound lifecycle marker part 2 | Medium |
-| `30013f....` | 6 | end-of-round stats/xp result payload family | Medium |
+| `30013f....` | 6 | remaining HP after applying requested damage | High |
 | `3e0100` | 1 | end-of-round terminal marker | Medium |
 
 ### Strong sequencing pattern discovered
@@ -397,7 +396,7 @@ Host -> gun notable values:
 Gun -> host notable values:
 - `49` (trigger)
 - `3202xx` / `320axx` (shot/state updates)
-- `30013f0109` down to `30013f0100` (result/stat countdown-like pattern)
+- `30013f0109` down to `30013f0100` (remaining HP after repeated 1-damage sync on a 10-HP gun)
 - `3e0100` (terminal marker)
 
 ### Updated practical guidance
@@ -495,7 +494,7 @@ Interpretation:
 - Earlier runs: `30013f0109` down to `30013f0100`
 - Test 6: `30013f010e` down to `30013f0100`
 
-This indicates an increased upper bound in that counter-like field under the new level/upgrades state.
+This matches the UI change from 10 life to 15 life: the reply is best read as remaining HP after each 1-damage end-of-game sync step.
 
 ## Level-5 Transition / Upgrade Delta (Test 7)
 
@@ -531,6 +530,14 @@ Compared to older runs (`3202/320a`, `310a`, `370a0100`), Test 7 shows:
 - `370e0100` (instead of `370a0100`)
 
 This suggests one or more progression-dependent mode/version parameters shifted from `0x0a`-series to `0x0d`/`0x0e`-series in the new state.
+
+Later evidence from Test 10 adds another profile-dependent family:
+
+- startup snapshot template `350012010200010a...`
+- config write template `360012...`
+- reload marker `3112`
+- in-game control `37040100`
+- ammo-state frame `320409`
 
 ### Important caution
 

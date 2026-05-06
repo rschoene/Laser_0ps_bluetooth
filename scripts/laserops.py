@@ -15,10 +15,25 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import AsyncIterator, Callable, Optional
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
+
+# ---------------------------------------------------------------------------
+# BLE identity constants (confirmed from HCI advertisement captures)
+# ---------------------------------------------------------------------------
+
+# All LaserOps blasters advertise this exact device name.
+DEVICE_NAME = "NerfV"
+
+# 128-bit primary service UUID (advertised in AD type 0x07).
+# Use this for reliable filtering — the device name alone may not be unique.
+SERVICE_UUID     = "073e1435-85d1-455c-97cd-0b8262f20eac"
+
+# Characteristic UUIDs (confirmed from GATT service discovery)
+NOTIFY_CHAR_UUID = "073e1382-85d1-455c-97cd-0b8262f20eac"  # Notify + Read
+WRITE_CHAR_UUID  = "073e1383-85d1-455c-97cd-0b8262f20eac"  # Write Without Response + Read
 
 # ---------------------------------------------------------------------------
 # ATT handle constants (confirmed from captures)
@@ -72,6 +87,13 @@ MSG_SESSION_CLOSE    = 0x42   # host → gun: 1 byte
 VOLUME_MIN = 0x00  # mute
 VOLUME_MAX = 0x1F  # 31 decimal
 
+# Name-id bounds observed in captures (see protocol docs).
+# The app uses separate first/second name lists, so keep separate limits.
+NAME_A_ID_MIN = 0x00
+NAME_A_ID_MAX = 0x32
+NAME_B_ID_MIN = 0x00
+NAME_B_ID_MAX = 0x32
+
 # ---------------------------------------------------------------------------
 # Data classes for decoded gun→host messages
 # ---------------------------------------------------------------------------
@@ -102,6 +124,15 @@ class StatCounterReply:
     """End-of-game stat counter (prefix 30013f, 5 bytes).  Semantics inferred."""
     stat_type: int   # byte 3 — matches the TT byte from the request
     counter: int     # byte 4 — descends to 00
+
+
+@dataclass
+class BlasterConfiguration:
+    """Current host-side model of a blaster's writable configuration."""
+    level: int = 1
+    name_a: int = 0
+    name_b: int = 0
+    volume: int = VOLUME_MAX
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +217,16 @@ def build_startup_query() -> bytes:
     return bytes([MSG_STARTUP_QUERY])
 
 
+def clamp_name_a_id(value: int) -> int:
+    """Clamp first-name ID byte to observed supported bounds."""
+    return max(NAME_A_ID_MIN, min(NAME_A_ID_MAX, value))
+
+
+def clamp_name_b_id(value: int) -> int:
+    """Clamp second-name ID byte to observed supported bounds."""
+    return max(NAME_B_ID_MIN, min(NAME_B_ID_MAX, value))
+
+
 def build_config_write(level: int, name_a: int, name_b: int) -> bytes:
     """
     Build a 13-byte config write payload (form A, host → gun).
@@ -197,10 +238,12 @@ def build_config_write(level: int, name_a: int, name_b: int) -> bytes:
 
     Returns form A: 36 00 0a 02 02 03 00 0a LL NN MM 00 04
     """
+    safe_name_a = clamp_name_a_id(name_a)
+    safe_name_b = clamp_name_b_id(name_b)
     return bytes([
         MSG_CONFIG_WRITE, 0x00, 0x0A, 0x02, 0x02,
         0x03, 0x00, 0x0A,
-        level & 0xFF, name_a & 0xFF, name_b & 0xFF,
+        level & 0xFF, safe_name_a & 0xFF, safe_name_b & 0xFF,
         0x00, 0x04,
     ])
 
@@ -256,6 +299,32 @@ def find_char_by_handle(client: BleakClient, handle: int):
     return None
 
 
+def find_char_by_uuid(client: BleakClient, uuid: str):
+    """Return the first GATT characteristic whose UUID matches ``uuid``."""
+    if client.services is None:
+        return None
+    needle = uuid.lower()
+    for service in client.services:
+        for char in service.characteristics:
+            if char.uuid.lower() == needle:
+                return char
+    return None
+
+
+def describe_characteristics(client: BleakClient) -> str:
+    """Return a compact overview of discovered characteristics for diagnostics."""
+    if client.services is None:
+        return "none"
+    details: list[str] = []
+    for service in client.services:
+        for char in service.characteristics:
+            props = ",".join(char.properties)
+            details.append(
+                f"0x{char.handle:04x}:{char.uuid}({props})"
+            )
+    return "; ".join(details) if details else "none"
+
+
 # ---------------------------------------------------------------------------
 # High-level device class
 # ---------------------------------------------------------------------------
@@ -296,16 +365,39 @@ class LaserOpsDevice:
     async def __aenter__(self) -> "LaserOpsDevice":
         await self._client.connect()
 
+        # Ensure service discovery is complete before characteristic lookup.
+        # Bleak API differs by version: some expose get_services(), others
+        # populate services during connect without this method.
+        if hasattr(self._client, "get_services"):
+            await self._client.get_services()
+
         self._notify_char = find_char_by_handle(self._client, NOTIFY_HANDLE)
         self._write_char  = find_char_by_handle(self._client, WRITE_HANDLE)
 
+        # ATT handles can differ across firmware revisions; UUIDs are stable.
+        if self._notify_char is None:
+            self._notify_char = find_char_by_uuid(self._client, NOTIFY_CHAR_UUID)
+        if self._write_char is None:
+            self._write_char = find_char_by_uuid(self._client, WRITE_CHAR_UUID)
+
+        # If services are unavailable on this backend/version, use UUID strings
+        # directly because Bleak accepts UUID specifiers for I/O calls.
+        if self._notify_char is None and self._client.services is None:
+            self._notify_char = NOTIFY_CHAR_UUID
+        if self._write_char is None and self._client.services is None:
+            self._write_char = WRITE_CHAR_UUID
+
         if self._notify_char is None:
             raise RuntimeError(
-                f"Notify characteristic (handle 0x{NOTIFY_HANDLE:04x}) not found"
+                "Notify characteristic not found "
+                f"(expected handle 0x{NOTIFY_HANDLE:04x} or UUID {NOTIFY_CHAR_UUID}). "
+                f"Discovered characteristics: {describe_characteristics(self._client)}"
             )
         if self._write_char is None:
             raise RuntimeError(
-                f"Write characteristic (handle 0x{WRITE_HANDLE:04x}) not found"
+                "Write characteristic not found "
+                f"(expected handle 0x{WRITE_HANDLE:04x} or UUID {WRITE_CHAR_UUID}). "
+                f"Discovered characteristics: {describe_characteristics(self._client)}"
             )
 
         await self._client.start_notify(self._notify_char, self._on_notification)
@@ -363,6 +455,20 @@ class LaserOpsDevice:
     def name(self) -> str:
         return self._device.name or self._device.address
 
+    async def query_startup_snapshot(self, timeout: float = 5.0) -> StartupSnapshot:
+        """Query and decode the startup snapshot without changing gun volume."""
+        response = await self._write_and_wait(
+            build_startup_query(),
+            response_prefix=bytes([MSG_STARTUP_SNAPSHOT]),
+            timeout=timeout,
+        )
+        snapshot = decode_startup_snapshot(response)
+        if snapshot is None:
+            raise RuntimeError(
+                f"Unexpected startup response: {response.hex()}"
+            )
+        return snapshot
+
     async def startup(self, volume: int = VOLUME_MAX) -> StartupSnapshot:
         """
         Perform the confirmed startup exchange:
@@ -372,16 +478,7 @@ class LaserOpsDevice:
 
         Returns the decoded StartupSnapshot.
         """
-        response = await self._write_and_wait(
-            build_startup_query(),
-            response_prefix=bytes([MSG_STARTUP_SNAPSHOT]),
-            timeout=5.0,
-        )
-        snapshot = decode_startup_snapshot(response)
-        if snapshot is None:
-            raise RuntimeError(
-                f"Unexpected startup response: {response.hex()}"
-            )
+        snapshot = await self.query_startup_snapshot(timeout=5.0)
         await self._write(build_volume_set(volume))
         return snapshot
 
@@ -462,25 +559,203 @@ class LaserOpsDevice:
         await self._write(build_session_close())
 
 
+class BlasterState:
+    """
+    Host-side state model for a connected blaster.
+
+    ``sync_up`` reads the gun startup snapshot into this object.
+    ``sync_down`` writes this object's config/volume back to the gun.
+    """
+
+    def __init__(
+        self,
+        gun: LaserOpsDevice,
+        config: Optional[BlasterConfiguration] = None,
+    ) -> None:
+        self._gun = gun
+        self.config = config or BlasterConfiguration()
+        self.last_snapshot: Optional[StartupSnapshot] = None
+
+    async def sync_up(self, timeout: float = 5.0) -> StartupSnapshot:
+        """Pull config-like state from the gun into this object."""
+        snapshot = await self._gun.query_startup_snapshot(timeout=timeout)
+        self.config.level = snapshot.level
+        self.config.name_a = snapshot.name_a
+        self.config.name_b = snapshot.name_b
+        self.last_snapshot = snapshot
+        return snapshot
+
+    async def sync_down(
+        self,
+        *,
+        write_config: bool = True,
+        write_volume: bool = True,
+    ) -> None:
+        """Push host-side state from this object to the gun."""
+        if write_config:
+            await self._gun.write_config(
+                level=self.config.level,
+                name_a=self.config.name_a,
+                name_b=self.config.name_b,
+            )
+        if write_volume:
+            await self._gun.set_volume(self.config.volume)
+
+    # Backward-compatible alias in case callers prefer the spelling "synch".
+    async def synch_up(self, timeout: float = 5.0) -> StartupSnapshot:
+        return await self.sync_up(timeout=timeout)
+
+    async def synch_down(
+        self,
+        *,
+        write_config: bool = True,
+        write_volume: bool = True,
+    ) -> None:
+        await self.sync_down(write_config=write_config, write_volume=write_volume)
+
+
 # ---------------------------------------------------------------------------
 # Discovery helper
 # ---------------------------------------------------------------------------
 
+async def stream_discovered_devices(
+    timeout: Optional[float] = None,
+    name_filter: str = DEVICE_NAME,
+    use_service_uuid: bool = True,
+    poll_interval: float = 0.2,
+    rediscover_on_reappear: bool = False,
+    lost_after: float = 8.0,
+) -> AsyncIterator[BLEDevice]:
+    """
+    Yield matching devices asynchronously as soon as they are discovered.
+
+    Use ``timeout=None`` (or <= 0) for an open-ended stream where caller code
+    decides when enough devices are connected and breaks out of the loop.
+
+    If ``rediscover_on_reappear`` is True, a device is considered "lost" after
+    ``lost_after`` seconds without advertisements and will be yielded again if
+    it reappears (for example after power-cycle/restart).
+    """
+    needle = name_filter.lower()
+
+    def _matches(device: BLEDevice) -> bool:
+        if use_service_uuid:
+            return True
+        return bool(device.name and needle in device.name.lower())
+
+    scanner_kwargs = {"service_uuids": [SERVICE_UUID]} if use_service_uuid else {}
+    queue: asyncio.Queue[BLEDevice] = asyncio.Queue()
+    last_seen_at: dict[str, float] = {}
+    active_devices: dict[str, BLEDevice] = {}
+    discovered_once: set[str] = set()
+
+    loop = asyncio.get_event_loop()
+
+    def _on_detect(device: BLEDevice, *_args) -> None:
+        addr = device.address.lower()
+        last_seen_at[addr] = loop.time()
+        queue.put_nowait(device)
+
+    scanner = BleakScanner(detection_callback=_on_detect, **scanner_kwargs)
+
+    deadline: Optional[float] = None
+    if timeout is not None and timeout > 0:
+        deadline = loop.time() + timeout
+
+    await scanner.start()
+    try:
+        while True:
+            now = loop.time()
+
+            if rediscover_on_reappear and lost_after > 0:
+                for addr in list(active_devices.keys()):
+                    last_seen = last_seen_at.get(addr, now)
+                    if now - last_seen > lost_after:
+                        active_devices.pop(addr, None)
+
+            while not queue.empty():
+                device = queue.get_nowait()
+                address = device.address.lower()
+
+                if not _matches(device):
+                    continue
+
+                if rediscover_on_reappear:
+                    # Yield when device first appears in the currently active set.
+                    is_new_active = address not in active_devices
+                    active_devices[address] = device
+                    if is_new_active:
+                        yield device
+                else:
+                    if address in discovered_once:
+                        continue
+                    discovered_once.add(address)
+                    yield device
+
+            if deadline is not None and loop.time() >= deadline:
+                break
+
+            await asyncio.sleep(max(0.05, poll_interval))
+    finally:
+        await scanner.stop()
+
 async def scan_for_devices(
     timeout: float = 10.0,
-    name_contains: str = "laser",
+    name_filter: str = DEVICE_NAME,
+    use_service_uuid: bool = True,
+    expected_count: Optional[int] = None,
 ) -> list[BLEDevice]:
     """
-    Return BLE devices whose advertisement name contains ``name_contains``
-    (case-insensitive).
+    Return nearby LaserOps blasters.
 
-    The official app uses "laser" as the search term in its own scan logic.
-    The exact advertisement name format is not confirmed from captures.
+    By default scans for the advertised service UUID (most reliable). Falls
+    back to a case-insensitive device-name substring match when
+    ``use_service_uuid`` is False.
+
+    If ``expected_count`` is set to a positive value, scanning stops early once
+    at least that many matching devices are discovered.
+
+    All LaserOps blasters advertise:
+      - Device Name (AD type 0x09): "NerfV"
+      - 128-bit Service UUID (AD type 0x07): 073e1435-85d1-455c-97cd-0b8262f20eac
+
+        For incremental/continuous discovery, use ``stream_discovered_devices``.
     """
-    devices = await BleakScanner.discover(timeout=timeout)
-    needle = name_contains.lower()
-    return [
-        d for d in devices
-        if d.name and needle in d.name.lower()
-    ]
+    needle = name_filter.lower()
+
+    def _matches(device: BLEDevice) -> bool:
+        if use_service_uuid:
+            return True
+        return bool(device.name and needle in device.name.lower())
+
+    if not expected_count or expected_count <= 0:
+        if use_service_uuid:
+            devices = await BleakScanner.discover(
+                timeout=timeout,
+                service_uuids=[SERVICE_UUID],
+            )
+            return list(devices)
+
+        devices = await BleakScanner.discover(timeout=timeout)
+        return [d for d in devices if _matches(d)]
+
+    scanner_kwargs = {"service_uuids": [SERVICE_UUID]} if use_service_uuid else {}
+    scanner = BleakScanner(**scanner_kwargs)
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+
+    await scanner.start()
+    try:
+        while True:
+            matched = [d for d in scanner.discovered_devices if _matches(d)]
+            if len(matched) >= expected_count:
+                return matched
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return matched
+
+            await asyncio.sleep(min(0.2, remaining))
+    finally:
+        await scanner.stop()
 

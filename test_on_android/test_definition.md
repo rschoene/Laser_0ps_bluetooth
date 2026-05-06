@@ -4,6 +4,7 @@
 - Disable bluetooth
 - (Extra options per test)
 - Go to Settings -> Systems -> Developer Options -> Enable Bluetooth HCI snoop stack protocol
+  (If you did not enable your developer options yet, go to Settings -> About Phone -> click the "Build number" multiple (7?) times. You only have to do this once.)
 - Disable bluetooth
 - Enable Bluetooth
 - Start app

@@ -31,7 +31,7 @@ Observed order for every connected gun (confirmed across all tests):
 | Step | Direction     | Handle   | Payload                                     |
 |------|---------------|----------|---------------------------------------------|
 | 1    | Host → gun    | `0x0026` | `35`                                        |
-| 2    | Gun → host    | `0x0023` | `35 00 0a 02 02 01 00 0a LL NN MM 00 0a`    |
+| 2    | Gun → host    | `0x0023` | `35 [template bytes] LL NN MM 00 0a`        |
 | 3    | Host → gun    | `0x0026` | `5b XX`  (XX = persisted volume, e.g. `1f`) |
 
 - Step 1 is a startup query/init request. **Confidence: confirmed**.
@@ -52,26 +52,29 @@ Single byte `35` on handle `0x0026`. Triggers the gun startup snapshot response.
 
 13-byte notification on handle `0x0023`.
 
+Baseline template used in Tests 1–9:
+
 ```
 35 00 0a 02 02 01 00 0a  LL  NN  MM  00  0a
  0  1  2  3  4  5  6  7   8   9  10  11  12
+```
+
+Alternate template observed in Test 10:
+
+```
+35 00 12 01 02 00 01 0a  LL  NN  MM  00  0a
 ```
 
 | Byte | Symbol | Meaning                                                      | Confidence |
 |------|--------|--------------------------------------------------------------|------------|
 | 0    | `35`   | Message ID                                                   | Confirmed  |
 | 1    | `00`   | Fixed / reserved                                             | Confirmed  |
-| 2    | `0a`   | Fixed in this snapshot; not a live health/ammo field         | Confirmed  |
-| 3    | `02`   | Fixed protocol/group field                                   | Inferred   |
-| 4    | `02`   | Fixed protocol/group field                                   | Inferred   |
-| 5    | `01`   | Startup subcommand / mode                                    | Inferred   |
-| 6    | `00`   | Fixed / reserved                                             | Confirmed  |
-| 7    | `0a`   | Fixed in this snapshot; not a live health/ammo field         | Confirmed  |
+| 2–7  | —      | Template-dependent framing bytes; not live health/ammo       | High       |
 | 8    | `LL`   | Persistent level                                             | High       |
 | 9    | `NN`   | Name part 1 (option field A)                                 | Inferred   |
 | 10   | `MM`   | Name part 2 (option field B)                                 | Inferred   |
 | 11   | `00`   | Fixed / reserved                                             | Confirmed  |
-| 12   | `0a`   | Fixed terminator                                             | Inferred   |
+| 12   | `0a`   | Fixed terminator                                             | High       |
 
 Observed startup snapshots across Test 1:
 
@@ -94,6 +97,12 @@ Test 7, Phase A (gun 0, level 4 still active at session start):
 35000a020201000a041214000a
 ```
 
+Test 10 (different gun profile, level 2):
+
+```
+350012010200010a022704000a
+```
+
 ---
 
 ### `36 ...` — Config Write (host → gun)
@@ -107,6 +116,7 @@ Observed forms:
 | A    | `36 00 0a 02 02 01 00 0a LL NN MM 00 0a` | Baseline / most tests      |
 | B    | `36 00 0a 02 02 03 00 0a LL NN MM 00 04` | Later phase of some tests  |
 | C    | `36 00 0d 03 02 03 00 0f LL NN MM 00 VV` | Level 4+ state (Test 6/7)  |
+| D    | `36 00 12 ?? ?? ?? ?? 0a LL NN MM 00 VV` | Alternate profile (Test 10)|
 
 Field mapping for byte 8 (`LL`) and bytes 9–10 (`NN MM`) — same layout as the startup snapshot.
 
@@ -131,6 +141,16 @@ Byte-level deltas when level increased 3 → 4 (Test 6 vs. Test 5):
 | 12   | `04`        | `04`        | Unchanged (form B) |
 
 At level 5 (Test 7) all three forms (A, B, C) reappear; the trailing byte in form C shifts from `04` to `03`.  Bytes 2, 3, and 7 likely encode progression-dependent parameters (possibly related to upgrade count or type), but their exact meaning is **inferred**.
+
+Test 10 shows a second config template family while preserving the same `LL NN MM` field positions:
+
+```
+360012010200010a022704000a
+360012010303010a0227040004
+360012020303010a0227040004
+```
+
+This confirms that bytes before `LL NN MM` are profile/firmware dependent framing fields, while byte 8 (`LL`) and bytes 9–10 (`NN MM`) remain stable.
 
 Other guns from Test 1 (no later progression data available):
 
@@ -259,7 +279,7 @@ Single byte `52` on handle `0x0023`. **Confidence: medium**. Always followed ~0.
 
 ---
 
-### `310a` / `310d` — Reload Marker B (gun → host)
+### `310a` / `310d` / `3112` — Reload Marker B (gun → host)
 
 Two-byte notification on handle `0x0023`. Pairs 1:1 with `52` in gameplay captures.
 
@@ -267,8 +287,15 @@ Two-byte notification on handle `0x0023`. Pairs 1:1 with `52` in gameplay captur
 |--------|--------------------------------------|------------|
 | `310a` | Older mode (Tests 1–6)               | Medium     |
 | `310d` | Newer mode (Test 7, level 5)         | Medium     |
+| `3112` | Alternate profile (Test 10, 18 ammo) | Medium     |
 
-The second byte (`0a` = 10 / `0d` = 13) may represent the number of ammunition reloaded per cycle — consistent with a Munition upgrade increasing the magazine size from 10 to 13.  **Confidence: inferred**.
+The second byte appears to match the magazine size reloaded per cycle:
+
+- `0a` = 10 ammo
+- `0d` = 13 ammo
+- `12` = 18 ammo
+
+This interpretation is strongly supported by Test 10, where the gun UI note reports 18 starting ammo and reload notifications use `3112`. **Confidence: inferred-high**.
 
 ---
 
@@ -284,12 +311,13 @@ Observed families:
 | `320a` | Older mode    | Medium-High |
 | `3203` | Newer mode    | Medium-High |
 | `320e` | Newer mode    | Medium-High |
+| `3204` | Alternate profile / control state (Test 10) | Medium |
 
 The last byte appears to be a counter that decrements per shot. Exact semantics inferred.
 
 ---
 
-### `37 0a 01 00` / `37 0e 01 00` — In-Game Control (host → gun)
+### `37 0a 01 00` / `37 0e 01 00` / `37 04 01 00` — In-Game Control (host → gun)
 
 Four-byte command on handle `0x0026`. Observed during gameplay; possibly a reload/special-shot state transition.
 
@@ -297,6 +325,7 @@ Four-byte command on handle `0x0026`. Observed during gameplay; possibly a reloa
 |---------------|-----------------------|------------|
 | `370a0100`    | Older mode (Tests 2–6)| Medium     |
 | `370e0100`    | Newer mode (Test 7)   | Medium     |
+| `37040100`    | Alternate profile (Test 10) | Medium |
 
 ---
 
@@ -322,8 +351,14 @@ Six-byte command on handle `0x0026`. Sent multiple times at end of game.
 | Byte | Symbol | Meaning      | Confidence |
 |------|--------|--------------|------------|
 | 0–2  | `5a3f01` | Command prefix | Inferred |
-| 3    | `TT`   | Stat class/type (01, 02, or 06 observed) | Inferred |
+| 3    | `TT`   | Damage amount to apply during end-of-game health sync (`01`, `02`, `06` observed) | High |
 | 4–5  | `0000` | Fixed zero   | Confirmed  |
+
+The best-supported interpretation is that the app replays or finalizes pending incoming damage at end of game by sending one request per damage event. Examples:
+
+- `5a3f01010000` = apply 1 damage
+- `5a3f01020000` = apply 2 damage
+- `5a3f01060000` = apply 6 damage
 
 ---
 
@@ -334,15 +369,29 @@ Five-byte notification on handle `0x0023`.
 | Byte | Symbol | Meaning                                   | Confidence |
 |------|--------|-------------------------------------------|------------|
 | 0–2  | `30013f` | Response prefix                         | Confirmed  |
-| 3    | `TT`   | Stat class/type (matches request)         | Inferred   |
-| 4    | `NN`   | Counter / progress value (descends to 00) | Inferred   |
+| 3    | `TT`   | Damage amount echoed from request         | High       |
+| 4    | `NN`   | Remaining HP after applying damage `TT`   | High       |
 
-Observed upper-bound values for `NN`:
-- Tests 2–3 (level 3): upper bound `09`
-- Test 6 (level 4): upper bound `0e`
-- Test 7 (level 5): values `00 04 05 06 07 0e` observed in a multi-round capture
+Observed sequences supporting this interpretation:
 
-The upper bound grows with level/upgrades progression.
+- Tests 3 and 10 (10 HP, only 1-damage events): `30013f0109` down to `30013f0100`
+- Test 6 (15 HP): `30013f010e` down to `30013f0100`
+- Test 2 (mixed 1/2-damage): `09 -> 07 -> 06 -> 04 -> 03 -> 02 -> 00`
+- Test 7 (mixed 1/6-damage): `0e -> 08 -> 07 -> 01 -> 00`
+
+Values are clamped at `00` if the damage exceeds remaining HP. These messages appear only in the end-of-game synchronization phase, not as live in-combat health telemetry.
+
+#### Cross-Test Damage-Sync Sequences
+
+| Test | HP Pool | Damage Events (`TT` values) | `NN` sequence (remaining HP) |
+|------|---------|------------------------------|-------------------------------|
+| 3    | 10      | all 1 (×10)                  | `09→08→07→06→05→04→03→02→01→00` |
+| 2    | 10      | mix of 1 and 2               | `09→07→06→04→03→02→00` |
+| 6    | 15      | all 1 (×15)                  | `0e→0d→0c→0b→0a→09→08→07→06→05→04→03→02→01→00` |
+| 7    | 15      | mix of 1 and 6               | `0e→08→07→06→05→04→00` (TT=06 skips 6 HP) |
+| 10   | 10      | all 1 (×10)                  | `09→08→07→06→05→04→03→02→01→00` |
+
+In Test 2 the `TT=02` events cause the counter to drop by 2 each time; in Test 7 the `TT=06` event drops it by 6 in a single step. The formula is simply: `NN(new) = NN(prev) − TT`.
 
 ---
 
