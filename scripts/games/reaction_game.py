@@ -282,7 +282,7 @@ async def main(address: Optional[str], volume: int, reaction_timeout: float, tim
             await asyncio.sleep(0.05)
         print("  Game armed.")
 
-        game = ReactionGame(gun, reaction_timeout=timeout)
+        game = ReactionGame(gun, reaction_timeout=reaction_timeout)
         await game.run()
 
         print("  Closing session …")
