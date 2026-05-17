@@ -6,6 +6,7 @@ This script produces a filtered BTSnoop log that keeps:
     - every non-ACL frame
     - only ACL frames whose src/dst address matches one of the NerfV blaster
         addresses auto-discovered from the raw capture
+    - then removes any packet that still references non-NerfV/non-phone devices
 
 It then anonymizes Bluetooth MAC addresses in the resulting binary capture.
 
@@ -206,6 +207,55 @@ def mac_to_bytes(mac: str) -> bytes:
     return bytes.fromhex(mac.replace(":", ""))
 
 
+def keep_acl_only_for_addresses(
+    input_path: Path,
+    output_path: Path,
+    allowed_addresses: list[str],
+    excluded_addresses: list[str],
+) -> str:
+    """Keep non-ACL + allowed ACL packets, excluding packets tied to other devices."""
+    if not allowed_addresses:
+        # Without known ACL endpoints, keep only non-ACL packets.
+        acl_allow = "!bthci_acl"
+    else:
+        src_terms = " || ".join(
+            f"(bthci_acl.src.bd_addr == {address})" for address in allowed_addresses
+        )
+        dst_terms = " || ".join(
+            f"(bthci_acl.dst.bd_addr == {address})" for address in allowed_addresses
+        )
+        acl_allow = f"(!bthci_acl) || (({src_terms}) && ({dst_terms}))"
+
+    if not excluded_addresses:
+        display_filter = acl_allow
+    else:
+        # Common Bluetooth address fields seen in Android btsnoop captures.
+        exclusion_fields = [
+            "bthci_acl.src.bd_addr",
+            "bthci_acl.dst.bd_addr",
+            "bthci_cmd.bd_addr",
+            "bthci_evt.bd_addr",
+            "bthci_evt.direct_bd_addr",
+            "btcommon.eir_ad.entry.bd_addr",
+            "btle.central_bd_addr",
+            "btle.peripheral_bd_addr",
+        ]
+        exclusion_terms: list[str] = []
+        for address in excluded_addresses:
+            for field in exclusion_fields:
+                exclusion_terms.append(f"({field} == {address})")
+        exclusion_filter = " || ".join(exclusion_terms)
+        display_filter = f"({acl_allow}) && !({exclusion_filter})"
+
+    run_command([
+        "tshark",
+        "-r", str(input_path),
+        "-Y", display_filter,
+        "-w", str(output_path),
+    ])
+    return display_filter
+
+
 def anonymize_capture(input_path: Path, output_path: Path, mapping: dict[str, str]) -> None:
     data = input_path.read_bytes()
     for real_mac, fake_mac_value in mapping.items():
@@ -247,6 +297,7 @@ def main() -> int:
         temp_dir_path = Path(temp_dir)
         staged_input_path = temp_dir_path / input_path.name
         filtered_path = temp_dir_path / "filtered.btsnoop"
+        cleaned_path = temp_dir_path / "filtered_without_other_devices.btsnoop"
         shutil.copy2(input_path, staged_input_path)
 
         nerfv_addresses = discover_nerfv_addresses(staged_input_path)
@@ -258,11 +309,32 @@ def main() -> int:
         filtered_display = filter_capture(staged_input_path, filtered_path, nerfv_addresses)
 
         phone_address = infer_phone_address(filtered_path, nerfv_addresses)
-        all_addresses = discover_all_addresses(filtered_path)
+        initially_seen_addresses = discover_all_addresses(filtered_path)
+        other_addresses = [
+            address
+            for address in initially_seen_addresses
+            if address not in nerfv_addresses
+            and address != phone_address
+            and address != ALL_ZERO_MAC
+        ]
+
+        allowed_acl_addresses = list(nerfv_addresses)
+        if phone_address:
+            allowed_acl_addresses.append(phone_address)
+        pruning_display = keep_acl_only_for_addresses(
+            filtered_path,
+            cleaned_path,
+            allowed_acl_addresses,
+            other_addresses,
+        )
+
+        all_addresses = discover_all_addresses(cleaned_path)
         mapping = build_mapping(all_addresses, nerfv_addresses, phone_address)
-        anonymize_capture(filtered_path, output_path, mapping)
+        anonymize_capture(cleaned_path, output_path, mapping)
 
     print(f"Applied display filter for {len(nerfv_addresses)} NerfV device(s)")
+    print("Applied secondary ACL pruning to keep only phone/NerfV endpoints")
+    print(f"secondary_filter: {pruning_display}")
     if phone_address:
         print(f"phone_host -> {mapping[phone_address]}")
     else:
