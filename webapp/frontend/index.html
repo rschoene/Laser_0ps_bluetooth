@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LaserOps Control</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <h1>LaserOps Steuerzentrale</h1>
+      <div id="status-pill" class="pill">API: unbekannt</div>
+    </header>
+
+    <nav class="view-tabs" aria-label="Ansichten">
+      <button type="button" class="tab-btn active" data-view-target="setup">Setup vor Spielstart</button>
+      <button type="button" class="tab-btn" data-view-target="game">Laufendes Spiel</button>
+      <button type="button" class="tab-btn" data-view-target="admin">Admin / Debug</button>
+    </nav>
+
+    <section class="band view-pane" data-view="setup">
+      <h2>Gerätesuche</h2>
+      <div class="row">
+        <label>Scan-Dauer (Sekunden)
+          <input id="scan-timeout" type="number" min="1" max="60" value="10">
+        </label>
+        <label>Name-Filter (nur bei Namenssuche)
+          <input id="scan-name" type="text" value="NerfV">
+        </label>
+        <label class="check">
+          <input id="scan-by-name" type="checkbox">
+          <span>Nach Gerätename statt Service-UUID suchen</span>
+        </label>
+        <button id="btn-scan" type="button">Geräte suchen</button>
+      </div>
+      <p class="hint">Hinweis: Während eines laufenden Bluetooth-Scans ist kein zweiter Scan möglich.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr><th>Name</th><th>Adresse</th><th>Signal (RSSI)</th><th>Aktion</th></tr>
+          </thead>
+          <tbody id="devices-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="band view-pane" data-view="setup">
+      <h2>Verbindungen</h2>
+      <div class="row">
+        <button id="btn-refresh-connections" type="button">Aktualisieren</button>
+      </div>
+      <p class="hint">Hinweis: Klick auf eine Zeile übernimmt Adresse und Team in die Admin-Steuerung.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr><th>Name</th><th>Adresse</th><th>Team</th><th>Verbindung</th><th>Verbunden seit</th><th>Aktion</th></tr>
+          </thead>
+          <tbody id="connections-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="band view-pane" data-view="setup">
+      <h2>Setup vor Spielstart</h2>
+      <p class="hint">Lokale Namen gelten nur in dieser Weboberfläche und überschreiben nicht den Gerätenamen im Blaster.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>Lokaler Name</th>
+            <th>Blaster</th>
+            <th>Adresse</th>
+            <th>Team-Slot</th>
+            <th>Team</th>
+            <th>Aktionen</th>
+          </tr>
+          </thead>
+          <tbody id="setup-body"></tbody>
+        </table>
+      </div>
+      <div class="row">
+        <label>Rundendauer (Sekunden)
+          <input id="setup-game-duration" type="number" min="30" max="3600" step="10" value="300">
+        </label>
+        <label>Lautstärke vor Spielstart (0-31)
+          <input id="setup-game-startup-volume" type="number" min="0" max="31" value="0">
+        </label>
+        <label class="check">
+          <input id="setup-force-startup" type="checkbox" checked>
+          <span>Vor Spielstart immer Startup ausführen</span>
+        </label>
+        <button id="btn-setup-start-multi" type="button">Spiel mit allen verbundenen Blastern starten</button>
+      </div>
+      <p class="hint">Empfehlung: Runde nur über die Weboberfläche starten und beenden, damit Ranking und Endstatistik konsistent bleiben.</p>
+    </section>
+
+    <section class="band view-pane" data-view="game">
+      <h2>Live-Ranking</h2>
+      <div class="row">
+        <div id="ranking-state" class="pill">Kein aktives Spiel</div>
+        <button id="btn-refresh-ranking" type="button">Ranking aktualisieren</button>
+        <button id="btn-game-end" type="button">Runde sauber beenden</button>
+      </div>
+      <p class="hint">Während der Runde werden Schüsse/Nachladen live gezählt. Treffer/Kills stehen nach dem Rundenende zur Verfügung.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>Platz</th>
+            <th>Name</th>
+            <th>Team</th>
+            <th>Schüsse</th>
+            <th>Nachladen</th>
+            <th>Treffer</th>
+            <th>Kills</th>
+            <th>Trefferquote</th>
+            <th>Verbindung</th>
+          </tr>
+          </thead>
+          <tbody id="ranking-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="band view-pane" data-view="game">
+      <h2>Rundenstatistik</h2>
+      <div class="row">
+        <div id="game-summary" class="pill">Noch keine abgeschlossene Runde</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>Slot</th>
+            <th>Name</th>
+            <th>Team</th>
+            <th>Treffer</th>
+            <th>Kills</th>
+          </tr>
+          </thead>
+          <tbody id="round-stats-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="band view-pane" data-view="game">
+      <h2>Live-Daten</h2>
+      <div class="row">
+        <div id="live-state" class="pill">Live-Stream: aus</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>Name</th>
+            <th>Adresse</th>
+            <th>Team</th>
+            <th>Verbindung</th>
+            <th>Trigger</th>
+            <th>Reload</th>
+            <th>Munition</th>
+            <th>Status</th>
+            <th>Letztes Ereignis</th>
+          </tr>
+          </thead>
+          <tbody id="live-status-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="band view-pane" data-view="admin">
+      <h2>Steuerung (Admin / Debug)</h2>
+      <div class="row">
+        <label>Ziel-Adresse (MAC des Blasters)
+          <input id="target-address" type="text" placeholder="AA:BB:CC:DD:EE:FF">
+        </label>
+        <label class="check">
+          <input id="auto-reconnect-enabled" type="checkbox" checked>
+          <span>Automatischer Reconnect</span>
+        </label>
+        <button id="btn-set-auto-reconnect" type="button">Automatik speichern</button>
+        <button id="btn-reconnect" type="button">Verbindung neu aufbauen</button>
+      </div>
+
+      <div class="row">
+        <label>Startup-Lautstärke (0 = stumm, 31 = laut)
+          <input id="startup-volume" type="number" min="0" max="31" value="0">
+        </label>
+        <button id="btn-startup" type="button">Startup ausführen</button>
+
+        <label>Lautstärke setzen (0-31)
+          <input id="set-volume" type="number" min="0" max="31" value="0">
+        </label>
+        <button id="btn-set-volume" type="button">Lautstärke setzen</button>
+      </div>
+
+      <div class="row">
+        <label>Team-Slot (2-5, eindeutig pro Blaster)
+          <input id="team-slot" type="number" min="2" max="5" value="2">
+        </label>
+        <label>Team
+          <select id="team-team">
+            <option value="0">Rot (0)</option>
+            <option value="1">Blau (1)</option>
+          </select>
+        </label>
+        <button id="btn-set-team" type="button">Team-Zuordnung speichern</button>
+      </div>
+
+      <div class="row">
+        <label>Befehlsabstand (Debug, Sekunden)
+          <input id="game-delay" type="number" min="0.08" max="0.30" step="0.01" value="0.12">
+        </label>
+        <label>Rundendauer (Sekunden)
+          <input id="game-duration" type="number" min="30" max="3600" step="10" value="300">
+        </label>
+        <label>Lautstärke vor Spielstart (0-31)
+          <input id="game-startup-volume" type="number" min="0" max="31" value="0">
+        </label>
+        <label class="check">
+          <input id="force-startup" type="checkbox" checked>
+          <span>Vor Spielstart immer Startup ausführen</span>
+        </label>
+        <button id="btn-game-start" type="button">Spiel für Ziel-Blaster starten</button>
+        <button id="btn-game-start-multi" type="button">Spiel für alle verbundenen Blaster starten</button>
+        <button id="btn-game-end-admin" type="button">Runde sauber beenden</button>
+        <button id="btn-poll-status" type="button">Status abfragen</button>
+        <button id="btn-close-session" type="button">Sitzung am Ziel-Blaster schließen</button>
+      </div>
+      <p class="hint">Hinweis: Der Debug-Befehl „Spielstatistik abrufen“ über alte 5A-Kommandos ist aus Sicherheitsgründen deaktiviert.</p>
+
+      <div class="row">
+        <label>Mehrfachstart: Ziel-Adressen (optional, komma-getrennt)
+          <input id="multi-addresses" type="text" placeholder="leer = alle verbundenen Blaster">
+        </label>
+      </div>
+    </section>
+
+    <section class="band view-pane" data-view="admin">
+      <h2>Live-Ereignislog (Debug)</h2>
+      <pre id="live-events" class="log"></pre>
+    </section>
+
+    <section class="band view-pane" data-view="admin">
+      <h2>Benachrichtigungen</h2>
+      <div class="row">
+        <button id="btn-refresh-notifications" type="button">Neu laden</button>
+        <label class="check">
+          <input id="auto-refresh" type="checkbox" checked>
+          <span>Automatisch aktualisieren (2 s)</span>
+        </label>
+      </div>
+      <pre id="notifications" class="log"></pre>
+    </section>
+
+    <section class="band view-pane" data-view="admin">
+      <h2>API-Antwort</h2>
+      <pre id="response" class="log"></pre>
+    </section>
+  </main>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
