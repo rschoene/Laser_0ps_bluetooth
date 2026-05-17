@@ -26,8 +26,8 @@ Name-space limits (IMPORTANT):
 
 Usage:
     python assign_device.py --address BLASTER_ADDR \
-                            --level 3 \\
-                            --name-a 17 \\
+                            --level 3 \
+                            --name-a 17 \
                             --name-b 19
 """
 

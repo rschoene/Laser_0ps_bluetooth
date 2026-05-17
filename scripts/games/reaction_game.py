@@ -11,10 +11,10 @@ The game ends when HP reaches 0.
   RELOAD = physically reload the gun   → gun sends 0x52
 
 Usage:
-    python reaction_game.py                        # scan and pick a device
-    python reaction_game.py --address AA:BB:CC:DD  # connect directly
-    python reaction_game.py --timeout 2.0          # 2-second reaction window
-    python reaction_game.py --volume 50            # set volume to 50
+    python reaction_game.py                           # scan and pick a device
+    python reaction_game.py --address AA:BB:CC:DD     # connect directly
+    python reaction_game.py --reacttimeout 10.0       # 10-second reaction window
+    python reaction_game.py --volume 80               # set volume to 80 %
 """
 from __future__ import annotations
 
@@ -262,10 +262,14 @@ async def pick_device(address: Optional[str], timeout: Optional[float]) -> Optio
 # Entry point
 # -----------------------------------------------------------------------
 
-async def main(address: Optional[str], volume: int, reaction_timeout: float, timeout: Optional[float]) -> None:
+async def main(address: Optional[str], volume_pct: int, reaction_timeout: float, timeout: Optional[float]) -> None:
     dev = await pick_device(address, timeout)
     if dev is None:
         sys.exit(1)
+
+    # Convert percentage (0–100) to raw volume range (VOLUME_MIN–VOLUME_MAX).
+    volume = round(VOLUME_MIN + (volume_pct / 100.0 * (VOLUME_MAX - VOLUME_MIN)))
+    volume = max(VOLUME_MIN, min(VOLUME_MAX, volume))
 
     print(f"Connecting to {dev.name or dev.address} …")
     async with LaserOpsDevice(dev) as gun:
@@ -282,7 +286,7 @@ async def main(address: Optional[str], volume: int, reaction_timeout: float, tim
             await asyncio.sleep(0.05)
         print("  Game armed.")
 
-        game = ReactionGame(gun, reaction_timeout=timeout)
+        game = ReactionGame(gun, reaction_timeout=reaction_timeout)
         await game.run()
 
         print("  Closing session …")
@@ -301,8 +305,8 @@ if __name__ == "__main__":
         help="BLE address of the blaster (omit to scan and pick)",
     )
     parser.add_argument(
-        "--volume", type=int, default=VOLUME_MIN,
-        help=f"Gun startup volume 0–31 (default: 0x{VOLUME_MIN:02x})",
+        "--volume", type=int, default=0,
+        help="Gun startup volume as a percentage 0–100 (default: 0)",
     )
     parser.add_argument(
         "--reacttimeout", type=float, default=_INITIAL_ROUND_TIMEOUT,
