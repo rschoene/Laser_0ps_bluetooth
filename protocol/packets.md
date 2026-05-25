@@ -123,10 +123,16 @@ Test 7 — level-5 writes (same gun, later phase of capture):
 36 00 0d 03 02 03 00 0f  05  12  14  00  03
 ```
 
-Observed rule for the standard form-C trailing byte (`VV`):
+Confirmed rule for the trailing byte (`VV`) in the standard single-player template family (`...020203000a...`):
 
-- `VV = 03` when reactivation-time is selected as the 4th upgrade and reload is not selected (Test 7).
-- `VV = 04` when reload-speed is selected as the 4th upgrade and reactivation is not selected (Test 6).
+- `VV = 03` when only reactivation-time is selected (no reload-speed).
+- `VV = 04` when only reload-speed is selected (no reactivation-time).
+
+Test 14 confirms this directly with isolated runs on the same gun:
+- runs 1-2 (reload-only): `36000a020203000a0512140004`
+- runs 3-4 (reactivation-only): `36000a020203000a0512140003`
+
+Tests 6/7 remain consistent with this mapping in the level-4+/form-C family.
 
 Test 10 — alternate profile template family:
 
