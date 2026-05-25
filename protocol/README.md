@@ -142,6 +142,13 @@ Byte-level deltas when level increased 3 → 4 (Test 6 vs. Test 5):
 
 At level 5 (Test 7) all three forms (A, B, C) reappear; the trailing byte in form C shifts from `04` to `03`.  Bytes 2, 3, and 7 likely encode progression-dependent parameters (possibly related to upgrade count or type), but their exact meaning is **inferred**.
 
+For the standard single-player template family with fixed middle bytes `...020203000a...` (seen in Test 14 as `36000a020203000a05121400VV`), the trailing byte mapping is now confirmed:
+
+- `VV = 03` when only reactivation time is selected (no reload speed).
+- `VV = 04` when only reload speed is selected (no reactivation time).
+
+Test 14 isolates this directly: runs 1-2 (reload-only) write `...0004`, runs 3-4 (reactivation-only) write `...0003`. Tests 6/7 are consistent with the same mapping in the level-4+/form-C state family.
+
 Test 10 shows a second config template family while preserving the same `LL NN MM` field positions:
 
 ```

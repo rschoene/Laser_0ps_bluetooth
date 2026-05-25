@@ -239,6 +239,8 @@
         "DD behaves like a damage profile selector; live per-hit damage is carried by 5a3f01TT0000 and echoed in 30013fTTNN.",
         "Do not treat AA/DD/HH as universally direct runtime counters; semantics depend on template family.",
         "Byte deltas beyond LL vary across progression/upgrades.",
+        "Trailing-byte mapping confirmed by Test 14 in standard single-player template family (...020203000a...): VV=03 for reactivation-only (no reload-speed), VV=04 for reload-only (no reactivation-time).",
+        "Tests 6/7 are consistent with the same VV mapping in the level-4+/form-C variant (36 00 0d 03 02 03 00 0f LL NN MM 00 VV).",
         "Seen trailing variants include 04, 03, and 0a in different phases.",
         "Alternate gun profile (Test 10) uses bytes 2-6: 12 01 02 00 01 or 12 01 03 03 01 or 12 02 03 03 01."
       ]
