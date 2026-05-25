@@ -119,6 +119,7 @@ def filter_capture(input_path: Path, output_path: Path, nerfv_addresses: list[st
         "tshark",
         "-r", str(input_path),
         "-Y", display_filter,
+        "-F", "btsnoop",
         "-w", str(output_path),
     ])
     return display_filter
@@ -251,6 +252,7 @@ def keep_acl_only_for_addresses(
         "tshark",
         "-r", str(input_path),
         "-Y", display_filter,
+        "-F", "btsnoop",
         "-w", str(output_path),
     ])
     return display_filter
