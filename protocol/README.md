@@ -142,6 +142,11 @@ Byte-level deltas when level increased 3 → 4 (Test 6 vs. Test 5):
 
 At level 5 (Test 7) all three forms (A, B, C) reappear; the trailing byte in form C shifts from `04` to `03`.  Bytes 2, 3, and 7 likely encode progression-dependent parameters (possibly related to upgrade count or type), but their exact meaning is **inferred**.
 
+For the standard form-C template (`36 00 0d 03 02 03 00 0f LL NN MM 00 VV`), current evidence supports this rule for the trailing byte:
+
+- `VV = 03` when the 4th upgrade is reactivation time and reload is not selected (Test 7 profile).
+- `VV = 04` when the 4th upgrade is reload speed and reactivation is not selected (Test 6 profile).
+
 Test 10 shows a second config template family while preserving the same `LL NN MM` field positions:
 
 ```

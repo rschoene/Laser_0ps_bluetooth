@@ -123,6 +123,11 @@ Test 7 — level-5 writes (same gun, later phase of capture):
 36 00 0d 03 02 03 00 0f  05  12  14  00  03
 ```
 
+Observed rule for the standard form-C trailing byte (`VV`):
+
+- `VV = 03` when reactivation-time is selected as the 4th upgrade and reload is not selected (Test 7).
+- `VV = 04` when reload-speed is selected as the 4th upgrade and reactivation is not selected (Test 6).
+
 Test 10 — alternate profile template family:
 
 ```
