@@ -45,3 +45,10 @@ game ends
 
 
 Awards: Hurricane Howler 70% hit accuracy; Hurricane Howler lowest time knocked out (0 seconds)
+
+## Open mode-classification note
+
+- Although this test was executed/labeled as all-vs-all, the observed setup assignments use the 00/01 team pattern.
+- This may indicate the round was effectively configured as a team-style 1v1 mapping at protocol level.
+- This interpretation differs from later all-vs-all captures (for example Test 11 with 02-pattern assignments).
+- This must be examined further with a controlled follow-up capture that keeps player count fixed and varies only the selected game mode in the app.

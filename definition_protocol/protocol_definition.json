@@ -4,6 +4,10 @@
     "version": "0.1.0",
     "status": "reverse-engineered",
     "source": "test_on_android/test_1/traffic_definition.md",
+    "source_files": [
+      "test_on_android/test_1/traffic_definition.md",
+      "scripts/laserops.py"
+    ],
     "notes": [
       "Fields include confidence tags where semantics are inferred.",
       "This definition is intended for tooling and Python integration.",
@@ -87,6 +91,10 @@
     "notify": {
       "handle": "0x0023",
       "role": "gun_to_host_notifications"
+    },
+    "setup": {
+      "handle": "0x0024",
+      "role": "notification_enable_setup_write"
     },
     "write": {
       "handle": "0x0026",
@@ -186,6 +194,27 @@
       ],
       "fields": [
         {
+          "name": "ammo_capacity_or_profile",
+          "index": 2,
+          "symbol": "AA",
+          "meaning": "ammo-capacity related byte (often matches reload_marker_b AA: 0x0a/0x0d/0x12); template-dependent",
+          "confidence": "medium_high"
+        },
+        {
+          "name": "damage_profile",
+          "index": 3,
+          "symbol": "DD",
+          "meaning": "damage/profile tier byte (correlates with observed damage classes but not a direct per-shot damage value)",
+          "confidence": "medium"
+        },
+        {
+          "name": "health_capacity_or_profile",
+          "index": 7,
+          "symbol": "HH",
+          "meaning": "health-capacity related byte (0x0a or 0x0f in standard templates; behaves like max-HP profile)",
+          "confidence": "medium_high"
+        },
+        {
           "name": "level",
           "index": 8,
           "symbol": "LL",
@@ -205,6 +234,10 @@
         }
       ],
       "notes": [
+        "Bytes 2/3/7 are profile bytes and are not globally fixed across all gun templates.",
+        "AA/HH in standard templates correlate with ammo/health capacity classes (for example 0x0a vs 0x0d/0x0f and 0x12 profile family in Test 10).",
+        "DD behaves like a damage profile selector; live per-hit damage is carried by 5a3f01TT0000 and echoed in 30013fTTNN.",
+        "Do not treat AA/DD/HH as universally direct runtime counters; semantics depend on template family.",
         "Byte deltas beyond LL vary across progression/upgrades.",
         "Seen trailing variants include 04, 03, and 0a in different phases.",
         "Alternate gun profile (Test 10) uses bytes 2-6: 12 01 02 00 01 or 12 01 03 03 01 or 12 02 03 03 01."
@@ -238,6 +271,7 @@
       "id_hex": "49",
       "direction": "host_to_gun",
       "handle": "0x0026",
+      "description": "multiplayer slot/team assignment",
       "payload_pattern": "49 SS TT",
       "fields": [
         {
@@ -259,11 +293,23 @@
         "Exact naming of the final byte is still inferred, but slot/team-style semantics fit both captures."
       ]
     },
-    "multiplayer_game_config": {
+    "trigger_fire_event": {
+      "id_hex": "49",
+      "direction": "gun_to_host",
+      "handle": "0x0023",
+      "description": "trigger/fire event",
+      "confidence": "high",
+      "notes": [
+        "Single-byte notification emitted on trigger pull/fire.",
+        "Typically followed by ammo/state notifications (32xx family) during gameplay."
+      ]
+    },
+    "game_config": {
       "id_hex": "4a",
       "direction": "host_to_gun",
       "handle": "0x0026",
-      "payload_pattern": "4a 00 0a ff DD DD 00 00 00 00 27 10",
+      "description": "game/session config",
+      "payload_pattern": "4a ............",
       "fields": [
         {
           "name": "duration_seconds_be",
@@ -274,11 +320,15 @@
       ],
       "observed_values": [
         "4a000aff00b4000000002710",
-        "4a000aff012c000000002710"
+        "4a000aff012c000000002710",
+        "4a0000000000000000001388"
       ],
       "notes": [
+        "Used in both multiplayer and single-player captures.",
         "00b4 = 180 seconds (3 minutes) in Tests 8 and 9.",
-        "012c = 300 seconds (5 minutes) in Test 8."
+        "012c = 300 seconds (5 minutes) in Test 8.",
+        "Single-player captures (for example Test 13) use a different variant with DD DD = 0000.",
+        "In current captures, the last two bytes map by mode: 2710 is seen in multiplayer variants, while 1388 is seen in single-player variants."
       ]
     },
     "round_start": {
@@ -316,6 +366,15 @@
       "response_handle": "0x0023",
       "request_pattern": "54 SS",
       "response_pattern": "54 00 HH KK SS",
+      "request_fields": [
+        {
+          "name": "slot_index",
+          "index": 1,
+          "symbol": "SS",
+          "meaning": "requested slot index",
+          "confidence": "very_high"
+        }
+      ],
       "fields": [
         {
           "name": "hits",
@@ -376,13 +435,54 @@
       "id_hex_prefix": "32",
       "direction": "gun_to_host",
       "handle": "0x0023",
+      "payload_pattern": "32 PP VV",
+      "fields": [
+        {
+          "name": "profile_or_mode_byte",
+          "index": 1,
+          "symbol": "PP",
+          "meaning": "ammo reporting profile/mode byte",
+          "confidence": "medium"
+        },
+        {
+          "name": "ammo_counter",
+          "index": 2,
+          "symbol": "VV",
+          "meaning": "post-shot ammo counter value",
+          "confidence": "medium_high"
+        }
+      ],
       "observed_prefixes": [
         "3202",
         "320a",
         "3203",
         "320e"
       ],
+      "outputs": [
+        {
+          "prefix_hex": "3202",
+          "description": "legacy ammo-state family (commonly observed as VV countdown after each shot)"
+        },
+        {
+          "prefix_hex": "320a",
+          "description": "alternate ammo-state family (countdown-style VV behavior)"
+        },
+        {
+          "prefix_hex": "3203",
+          "description": "alternate profile ammo-state family (high-capacity countdown-style VV behavior)"
+        },
+        {
+          "prefix_hex": "320e",
+          "description": "alternate profile ammo-state family (high-capacity countdown-style VV behavior)"
+        }
+      ],
       "confidence": "medium_high"
+      ,
+      "notes": [
+        "Ammo_state is not a universally stable direct remaining-ammo report across all profiles/modes.",
+        "VV behaves like a post-shot countdown value and often resets after reload (52/31AA), but semantics vary by profile byte PP.",
+        "Use reload_marker_b (31AA) as the authoritative ammo-per-reload capacity indicator."
+      ]
     },
     "volume_set": {
       "id_hex": "5b",
@@ -415,6 +515,7 @@
         "06"
       ],
       "notes": [
+        "In captures, TT is echoed as the TT byte in the paired damage_apply_response (30013fTTNN).",
         "Sent by the host after each shot that hits this gun.",
         "TT=01 → 1 damage; TT=02 → 2 damage; TT=06 → 6 damage (Level 5 heavy blaster in Test 7).",
         "Always followed by a damage_apply_response from the gun.",
@@ -444,7 +545,8 @@
       ],
       "notes": [
         "Gun emits this immediately after processing a damage_apply_request.",
-        "NN decrements by TT each hit; final response has NN=00 (gun destroyed).",
+        "During pure damage flow, NN usually decrements by TT each hit; final response has NN=00 (gun destroyed).",
+        "NN can increase or show non-TT deltas during recovery/reset phases (for example in runs with set_health 39 traffic), so NN should be treated as resulting HP state rather than a strict accumulator.",
         "Validated across Tests 2, 3, 6, 7, 10 with exact HP sequences matching test notes.",
         "Previously misidentified as a generic stat counter."
       ]
@@ -477,6 +579,26 @@
         "370a0100 and 370e0100 seen in standard gun profiles.",
         "37040100 seen in Test 10 alternate gun profile (also uses 3112 reload and 35001201... startup).",
         "Exact role of CC not confirmed; may relate to fire rate or mode."
+      ]
+    },
+    "set_health": {
+      "id_hex": "39",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "payload_pattern": "39 HH",
+      "fields": [
+        {
+          "name": "health_value",
+          "index": 1,
+          "symbol": "HH",
+          "meaning": "target or applied HP value used by the host during gameplay",
+          "confidence": "medium_high"
+        }
+      ],
+      "notes": [
+        "In Test 13 filtered log, all observed HP recovery events occur only in runs that contain 39 messages.",
+        "Runs without 39 in the same capture show no HP recovery events.",
+        "Causality is still inferred from correlation; keep this mapping under review as additional captures are added."
       ]
     },
     "session_close": {
@@ -526,6 +648,72 @@
     }
   ],
   "python_hints": {
+    "library_reference": {
+      "module": "scripts/laserops.py",
+      "constants": {
+        "device_name": "NerfV",
+        "service_uuid": "073e1435-85d1-455c-97cd-0b8262f20eac",
+        "notify_char_uuid": "073e1382-85d1-455c-97cd-0b8262f20eac",
+        "write_char_uuid": "073e1383-85d1-455c-97cd-0b8262f20eac",
+        "notify_handle": "0x0023",
+        "setup_handle": "0x0024",
+        "write_handle": "0x0026",
+        "volume_min": "0x00",
+        "volume_max": "0x1f",
+        "name_a_id_min": "0x00",
+        "name_a_id_max": "0x32",
+        "name_b_id_min": "0x00",
+        "name_b_id_max": "0x32"
+      },
+      "builders": [
+        {
+          "function": "build_startup_query",
+          "payload": "35"
+        },
+        {
+          "function": "build_config_write",
+          "payload_pattern": "36 00 0a 02 02 03 00 0a LL NN MM 00 04"
+        },
+        {
+          "function": "build_apply_commit",
+          "payload": "57"
+        },
+        {
+          "function": "build_volume_set",
+          "payload_pattern": "5bXX",
+          "notes": "XX is clamped to 0x00..0x1f"
+        },
+        {
+          "function": "build_status_poll",
+          "payload": "51"
+        },
+        {
+          "function": "build_stat_request",
+          "payload_pattern": "5a 3f 01 TT 00 00"
+        },
+        {
+          "function": "build_session_close",
+          "payload": "42"
+        }
+      ],
+      "decoders": [
+        {
+          "function": "decode_startup_snapshot",
+          "accepts": "35... (13 bytes)",
+          "extracts": ["level", "name_a", "name_b"]
+        },
+        {
+          "function": "decode_status_reply",
+          "accepts": "51 XX YY (3 bytes)",
+          "extracts": ["status_word_be"]
+        },
+        {
+          "function": "decode_stat_counter",
+          "accepts": "30 01 3f TT NN (5 bytes)",
+          "extracts": ["stat_type", "counter"]
+        }
+      ]
+    },
     "scan_by_service_uuid": "073e1435-85d1-455c-97cd-0b8262f20eac",
     "scan_by_name": "NerfV",
     "notify_char_uuid": "073e1382-85d1-455c-97cd-0b8262f20eac",
