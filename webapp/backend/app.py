@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -45,7 +47,7 @@ class GameStartRequest(BaseModel):
     force_startup: bool = True
     duration_seconds: int = Field(default=300, ge=30, le=3600)
     slot: int | None = Field(default=None, ge=2, le=5)
-    team: int | None = Field(default=None, ge=0, le=1)
+    team: int | None = Field(default=None, ge=0, le=2)
 
 
 class MultiGameStartRequest(BaseModel):
@@ -62,7 +64,7 @@ class GameEndRequest(BaseModel):
 
 class TeamProfileRequest(BaseModel):
     slot: int = Field(ge=2, le=5)
-    team: int = Field(ge=0, le=1)
+    team: int = Field(ge=0, le=2)
 
 
 class LocalNameRequest(BaseModel):
@@ -102,6 +104,83 @@ def _hub(request: Request) -> BleHub:
     return request.app.state.ble_hub
 
 
+async def _run_host_command(
+    command: tuple[str, ...], timeout: float = 8.0
+) -> dict[str, object]:
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return {
+            "command": list(command),
+            "ok": False,
+            "timed_out": True,
+            "returncode": None,
+            "stdout": "",
+            "stderr": "command timed out",
+        }
+    return {
+        "command": list(command),
+        "ok": proc.returncode == 0,
+        "timed_out": False,
+        "returncode": proc.returncode,
+        "stdout": stdout.decode(errors="replace").strip(),
+        "stderr": stderr.decode(errors="replace").strip(),
+    }
+
+
+async def _enable_bluetooth_host() -> dict[str, object]:
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("bluetooth enable is only supported on linux hosts")
+
+    commands: tuple[tuple[str, ...], ...] = (
+        ("rfkill", "unblock", "bluetooth"),
+        ("bluetoothctl", "power", "on"),
+        ("hciconfig", "hci0", "up"),
+    )
+    attempts: list[dict[str, object]] = []
+    ran_any = False
+    any_ok = False
+
+    for cmd in commands:
+        if shutil.which(cmd[0]) is None:
+            attempts.append(
+                {
+                    "command": list(cmd),
+                    "ok": False,
+                    "skipped": "tool not installed",
+                }
+            )
+            continue
+        ran_any = True
+        result = await _run_host_command(cmd)
+        attempts.append(result)
+        if result.get("ok"):
+            any_ok = True
+
+    if not ran_any:
+        raise RuntimeError(
+            "no supported bluetooth control utility found (rfkill/bluetoothctl/hciconfig)"
+        )
+    if not any_ok:
+        last_error = ""
+        for attempt in reversed(attempts):
+            stderr = str(attempt.get("stderr") or "").strip()
+            if stderr:
+                last_error = stderr
+                break
+        detail = f" ({last_error})" if last_error else ""
+        raise RuntimeError(f"failed to enable bluetooth{detail}")
+
+    return {"status": "ok", "attempts": attempts}
+
+
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -132,6 +211,14 @@ async def scan(request: Request, body: ScanRequest) -> dict[str, object]:
     except Exception as exc:
         raise _as_http_error(exc) from exc
     return {"devices": devices}
+
+
+@app.post("/api/bluetooth/enable")
+async def enable_bluetooth() -> dict[str, object]:
+    try:
+        return await _enable_bluetooth_host()
+    except Exception as exc:
+        raise _as_http_error(exc) from exc
 
 
 @app.get("/api/connections")

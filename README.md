@@ -7,12 +7,9 @@ The main goal is safe and repeatable multi-blaster operation through a local ser
 
 ## Credits
 
-This repository is based on foundational work by:
-
 - **Robert Schone (`rschoene`)**
-- Project: https://github.com/rschoene/Laser_0ps_bluetooth
 
-Thanks for the original reverse-engineering work and protocol groundwork.
+All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro Android app (see `test_on_android/` for raw logs and analysis).
 
 ## Project Goals
 
@@ -33,7 +30,9 @@ Laser_0ps_bluetooth/
   test_on_android/         # Capture notes and reverse-engineering evidence
 ```
 
-## Quick Start (Development)
+## Web UI Quick Start
+
+### Development
 
 No frontend build step is required.
 
@@ -49,9 +48,9 @@ Open:
 
 `http://<HOST-IP>:8000`
 
-## Raspberry Pi Installation (Recommended)
+### Raspberry Pi Installation (Recommended)
 
-### 1) Base packages
+#### 1) Base packages
 
 ```bash
 sudo apt update
@@ -67,7 +66,7 @@ sudo systemctl start bluetooth
 sudo systemctl status bluetooth
 ```
 
-### 2) Copy project to the Pi
+#### 2) Copy project to the Pi
 
 Recommended path:
 
@@ -75,7 +74,7 @@ Recommended path:
 
 Use either `git clone` or FTP/SFTP upload.
 
-### 3) Python environment
+#### 3) Python environment
 
 ```bash
 cd /home/pi/Laser_0ps_bluetooth
@@ -85,7 +84,7 @@ pip install --upgrade pip
 pip install -r webapp/requirements.txt
 ```
 
-### 4) Manual server test
+#### 4) Manual server test
 
 ```bash
 cd /home/pi/Laser_0ps_bluetooth
@@ -97,7 +96,7 @@ Open:
 
 `http://<PI-IP>:8000`
 
-### 5) Run as systemd service
+#### 5) Run as systemd service
 
 Create `/etc/systemd/system/laserops-web.service`:
 
@@ -136,16 +135,16 @@ Live logs:
 journalctl -u laserops-web -f
 ```
 
-## Operational Notes
+### Operational Notes
 
 - Team/slot constraints are currently limited to:
   - Slots: `2..5`
-  - Teams: `0..1`
+  - Teams: `0..2` (`0=Rot`, `1=Blau`, `2=Violett/FFA`)
 - Multiplayer start requires at least **2 connected blasters**
 - Some blaster/firmware profiles still need a **manual reload press** after start to confirm round activation
 - Legacy `/api/stats/{address}` is disabled in safe mode
 
-## Update Workflow
+### Update Workflow
 
 ```bash
 cd /home/pi/Laser_0ps_bluetooth

@@ -32,6 +32,24 @@ body {
   margin-bottom: 12px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lang-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lang-picker select {
+  min-width: 110px;
+}
+
 .view-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -90,6 +108,10 @@ h2 {
 
 .view-pane.hidden {
   display: none;
+}
+
+.hidden {
+  display: none !important;
 }
 
 .row {
@@ -197,6 +219,32 @@ th {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.errors-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.errors-head h2 {
+  margin: 0;
+}
+
+.errors-head button {
+  border-color: var(--line);
+  background: #fff;
+  color: var(--text);
+}
+
+.error-log {
+  min-height: 64px;
+  max-height: 220px;
+  background: #fff7f6;
+  border-color: #f3c4be;
+  color: #7a1d16;
 }
 
 .setup-name-input {

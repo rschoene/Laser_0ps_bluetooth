@@ -27,10 +27,13 @@ SAFE_NAME_INDEX_MAX = 49
 SAFE_SLOT_MIN = 2
 SAFE_SLOT_MAX = 5
 SAFE_TEAM_MIN = 0
-SAFE_TEAM_MAX = 1
+SAFE_TEAM_MAX = 2
+# Test 12 (all-vs-all) shows team id 0x02 for all participants.
+SAFE_MULTIPLAYER_FFA_TEAM = 2
 SAFE_GAME_DELAY_MIN = 0.08
 SAFE_GAME_DELAY_MAX = 0.30
 SAFE_MULTI_START_MAX_DEVICES = 4
+SAFE_MULTI_RECONNECT_TIMEOUT = 8.0
 SAFE_STARTUP_VOLUME_DEFAULT = 0
 SAFE_GAME_DURATION_SECONDS_DEFAULT = 300
 SAFE_GAME_DURATION_SECONDS_MIN = 30
@@ -542,31 +545,41 @@ class BleHub:
         safe_delay = self._validate_safe_game_delay(delay)
         safe_duration_seconds = self._validate_game_duration(duration_seconds)
         async with self._bulk_game_start_lock:
-            conns = await self._resolve_connections(addresses)
-            if len(conns) < 2:
-                raise ValueError(
-                    "multiplayer start requires at least 2 connected blasters"
-                )
-            for conn in conns:
-                await self._ensure_connected(conn)
+            requested_conns = await self._resolve_connections(addresses)
+            if len(requested_conns) < 2:
+                raise ValueError("multiplayer start requires at least 2 connected blasters")
+            reconnect_errors: dict[str, str] = {}
+            for conn in requested_conns:
+                if conn.gun.is_connected or not conn.desired_connected:
+                    continue
+                try:
+                    await self._ensure_connected(
+                        conn,
+                        timeout=SAFE_MULTI_RECONNECT_TIMEOUT,
+                    )
+                except Exception as exc:
+                    reconnect_errors[conn.address.lower()] = self._format_error(exc)
+
+            connected_for_start = [conn for conn in requested_conns if conn.gun.is_connected]
+            disconnected_conns = [conn for conn in requested_conns if not conn.gun.is_connected]
             await self._finalize_game_session(
                 reason="superseded_by_new_start",
                 send_close=True,
             )
 
-            if len(conns) > SAFE_MULTI_START_MAX_DEVICES:
+            if len(requested_conns) > SAFE_MULTI_START_MAX_DEVICES:
                 raise ValueError(
                     f"too many devices for one synchronized start "
-                    f"({len(conns)} > {SAFE_MULTI_START_MAX_DEVICES})"
+                    f"({len(requested_conns)} > {SAFE_MULTI_START_MAX_DEVICES})"
                 )
-            busy = [conn.address for conn in conns if conn.op_lock.locked()]
+            busy = [conn.address for conn in requested_conns if conn.op_lock.locked()]
             if busy:
                 raise ValueError(
                     "devices are busy; retry after current operation: "
                     + ", ".join(busy)
                 )
 
-            team_profiles = self._resolve_multi_team_profiles(conns)
+            team_profiles = self._resolve_multi_team_profiles(requested_conns)
             prepared = [
                 {
                     "address": conn.address,
@@ -575,15 +588,27 @@ class BleHub:
                     "slot": team_profiles[conn.address.lower()][0],
                     "team": team_profiles[conn.address.lower()][1],
                 }
-                for conn in conns
+                for conn in requested_conns
             ]
 
-            failures: list[dict[str, str]] = []
+            failures: list[dict[str, str]] = [
+                {
+                    "address": conn.address,
+                    "error": reconnect_errors.get(
+                        conn.address.lower(),
+                        (
+                            "ConnectionError: device not connected at multi-start "
+                            f"(state={conn.connection_state})"
+                        ),
+                    ),
+                }
+                for conn in disconnected_conns
+            ]
             started: list[dict[str, Any]] = []
             # Match observed multiplayer sequence per blaster:
             # 49 -> 4a -> 5b -> 35(snapshot) -> 58
             # Keep this sequence contiguous per blaster (no global arm phase).
-            for index, conn in enumerate(conns):
+            for index, conn in enumerate(connected_for_start):
                 selected_slot, selected_team = team_profiles[conn.address.lower()]
                 try:
                     snapshot, recovery_used = await self._run_multiplayer_start_sequence(
@@ -593,6 +618,8 @@ class BleHub:
                         startup_volume=startup_volume,
                         delay=safe_delay,
                         duration_seconds=safe_duration_seconds,
+                        allow_reconnect=True,
+                        reconnect_timeout=SAFE_MULTI_RECONNECT_TIMEOUT,
                     )
                     conn.last_snapshot = _snapshot_to_dict(snapshot)
                     conn.last_game_start_at = time.time()
@@ -632,14 +659,16 @@ class BleHub:
                         "recovery_used": recovery_used,
                     }
                 )
-                if index < len(conns) - 1 and safe_delay > 0:
+                if index < len(connected_for_start) - 1 and safe_delay > 0:
                     await asyncio.sleep(min(0.05, safe_delay))
 
             ranking_snapshot: dict[str, Any] | None = None
-            if started:
+            if len(started) >= 2:
                 started_keys = {item["address"].lower() for item in started}
                 started_conns = [
-                    conn for conn in conns if conn.address.lower() in started_keys
+                    conn
+                    for conn in requested_conns
+                    if conn.address.lower() in started_keys
                 ]
                 ranking_snapshot = await self._start_game_session(
                     started_conns,
@@ -649,11 +678,11 @@ class BleHub:
                 ranking_snapshot = await self.game_ranking()
 
             return {
-                "requested_count": len(conns),
-                "prepared_count": len(started),
+                "requested_count": len(requested_conns),
+                "prepared_count": len(prepared),
                 "started_count": len(started),
                 "failure_count": len(failures),
-                "aborted": bool((not started) and failures),
+                "aborted": bool((len(started) < 2) and failures),
                 "duration_seconds": safe_duration_seconds,
                 "prepared": prepared,
                 "started": started,
@@ -924,13 +953,18 @@ class BleHub:
             await asyncio.sleep(delay)
             delay = min(RECONNECT_MAX_DELAY, max(RECONNECT_BASE_DELAY, delay * 1.8))
 
-    async def _ensure_connected(self, conn: ConnectionState) -> None:
+    async def _ensure_connected(
+        self,
+        conn: ConnectionState,
+        *,
+        timeout: float = RECONNECT_SCAN_TIMEOUT,
+    ) -> None:
         if conn.gun.is_connected:
             conn.connection_state = "connected"
             return
         if not conn.desired_connected:
             raise ConnectionError("device is disconnected by user request")
-        await self._reconnect_once(conn, timeout=RECONNECT_SCAN_TIMEOUT)
+        await self._reconnect_once(conn, timeout=timeout)
 
     async def _reconnect_once(self, conn: ConnectionState, timeout: float) -> None:
         async with conn.reconnect_lock:
@@ -1562,7 +1596,7 @@ class BleHub:
         if selected_team is None:
             selected_team = self._default_team_for_slot(selected_slot)
         elif selected_team < SAFE_TEAM_MIN or selected_team > SAFE_TEAM_MAX:
-            # Migrate stale assignments from older UI versions (e.g. team=2).
+            # Migrate stale assignments from older UI versions.
             selected_team = self._default_team_for_slot(selected_slot)
         safe_slot, safe_team = self._validate_safe_team(
             slot=selected_slot, team=selected_team
@@ -1586,7 +1620,7 @@ class BleHub:
                 continue
             if raw_team < SAFE_TEAM_MIN or raw_team > SAFE_TEAM_MAX:
                 safe_slot = raw_slot
-                safe_team = self._default_team_for_slot(raw_slot)
+                safe_team = SAFE_MULTIPLAYER_FFA_TEAM
             else:
                 safe_slot = raw_slot
                 safe_team = raw_team
@@ -1612,7 +1646,7 @@ class BleHub:
             if next_slot > SAFE_SLOT_MAX:
                 next_slot = SAFE_SLOT_MIN
             slot = next_slot
-            team = self._default_team_for_slot(slot)
+            team = SAFE_MULTIPLAYER_FFA_TEAM
             profiles[key] = (slot, team)
             conn.assigned_slot = slot
             conn.assigned_team = team
@@ -1673,6 +1707,8 @@ class BleHub:
         startup_volume: int,
         delay: float,
         duration_seconds: int,
+        allow_reconnect: bool = True,
+        reconnect_timeout: float = RECONNECT_SCAN_TIMEOUT,
     ) -> tuple[Any, bool]:
         """
         Run multiplayer start sequence with one guarded recovery retry.
@@ -1685,7 +1721,12 @@ class BleHub:
         last_error: Exception | None = None
         for attempt in (1, 2):
             try:
-                await self._ensure_connected(conn)
+                if allow_reconnect:
+                    await self._ensure_connected(conn, timeout=reconnect_timeout)
+                elif not conn.gun.is_connected:
+                    raise ConnectionError(
+                        f"device not connected for multiplayer start: {conn.address}"
+                    )
                 async with conn.op_lock:
                     if attempt == 2:
                         await conn.gun.startup(volume=startup_volume)
