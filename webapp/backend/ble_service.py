@@ -30,7 +30,7 @@ SAFE_TEAM_MIN = 0
 SAFE_TEAM_MAX = 2
 # Test 12 (all-vs-all) shows team id 0x02 for all participants.
 SAFE_MULTIPLAYER_FFA_TEAM = 2
-SAFE_GAME_DELAY_MIN = 0.08
+SAFE_GAME_DELAY_MIN = 0.00
 SAFE_GAME_DELAY_MAX = 0.30
 SAFE_MULTI_START_MAX_DEVICES = 4
 SAFE_MULTI_RECONNECT_TIMEOUT = 8.0
@@ -480,6 +480,7 @@ class BleHub:
             await self._finalize_game_session(
                 reason="superseded_by_new_start",
                 send_close=True,
+                collect_slot_stats=False,
             )
             selected_slot, selected_team = self._resolve_team_for_start(
                 conn=conn,
@@ -565,6 +566,7 @@ class BleHub:
             await self._finalize_game_session(
                 reason="superseded_by_new_start",
                 send_close=True,
+                collect_slot_stats=False,
             )
 
             if len(requested_conns) > SAFE_MULTI_START_MAX_DEVICES:
@@ -607,60 +609,29 @@ class BleHub:
             started: list[dict[str, Any]] = []
             # Match observed multiplayer sequence per blaster:
             # 49 -> 4a -> 5b -> 35(snapshot) -> 58
-            # Keep this sequence contiguous per blaster (no global arm phase).
-            for index, conn in enumerate(connected_for_start):
-                selected_slot, selected_team = team_profiles[conn.address.lower()]
-                try:
-                    snapshot, recovery_used = await self._run_multiplayer_start_sequence(
+            # Run each blaster sequence concurrently so all devices are ready quickly.
+            tasks = [
+                asyncio.create_task(
+                    self._start_one_multi_connection(
                         conn=conn,
-                        slot=selected_slot,
-                        team=selected_team,
+                        slot=team_profiles[conn.address.lower()][0],
+                        team=team_profiles[conn.address.lower()][1],
                         startup_volume=startup_volume,
                         delay=safe_delay,
                         duration_seconds=safe_duration_seconds,
-                        allow_reconnect=True,
-                        reconnect_timeout=SAFE_MULTI_RECONNECT_TIMEOUT,
+                        force_startup=force_startup,
                     )
-                    conn.last_snapshot = _snapshot_to_dict(snapshot)
-                    conn.last_game_start_at = time.time()
-                except Exception as exc:
-                    failures.append(
-                        {
-                            "address": conn.address,
-                            "error": self._format_error(exc),
-                        }
-                    )
-                    continue
-                self._schedule_event(
-                    "game_start",
-                    {
-                        "address": conn.address,
-                        "name": conn.name,
-                        "startup_performed": True,
-                        "force_startup": force_startup,
-                        "delay": safe_delay,
-                        "duration_seconds": safe_duration_seconds,
-                        "slot": selected_slot,
-                        "team": selected_team,
-                        "game_start_at": conn.last_game_start_at,
-                        "multi": True,
-                        "recovery_used": recovery_used,
-                    },
                 )
-                started.append(
-                    {
-                        "address": conn.address,
-                        "startup_performed": True,
-                        "last_snapshot": conn.last_snapshot,
-                        "slot": selected_slot,
-                        "team": selected_team,
-                        "duration_seconds": safe_duration_seconds,
-                        "game_start_at": conn.last_game_start_at,
-                        "recovery_used": recovery_used,
-                    }
-                )
-                if index < len(connected_for_start) - 1 and safe_delay > 0:
-                    await asyncio.sleep(min(0.05, safe_delay))
+                for conn in connected_for_start
+            ]
+            if tasks:
+                results = await asyncio.gather(*tasks)
+                for started_item, failure_item in results:
+                    if failure_item is not None:
+                        failures.append(failure_item)
+                        continue
+                    if started_item is not None:
+                        started.append(started_item)
 
             ranking_snapshot: dict[str, Any] | None = None
             if len(started) >= 2:
@@ -1166,6 +1137,7 @@ class BleHub:
         *,
         reason: str,
         send_close: bool,
+        collect_slot_stats: bool = True,
         expected_session_id: int | None = None,
     ) -> dict[str, Any]:
         async with self._game_session_lock:
@@ -1218,7 +1190,7 @@ class BleHub:
                 if conn.assigned_slot is not None
             }
         )
-        if slots:
+        if collect_slot_stats and slots:
             slot_stats_map, stats_source_address, stats_error = (
                 await self._collect_round_slot_stats(
                     participant_connections=participant_connections,
@@ -1698,6 +1670,63 @@ class BleHub:
             return text
         return f"{name}: {text}"
 
+    async def _start_one_multi_connection(
+        self,
+        *,
+        conn: ConnectionState,
+        slot: int,
+        team: int,
+        startup_volume: int,
+        delay: float,
+        duration_seconds: int,
+        force_startup: bool,
+    ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+        try:
+            snapshot, recovery_used = await self._run_multiplayer_start_sequence(
+                conn=conn,
+                slot=slot,
+                team=team,
+                startup_volume=startup_volume,
+                delay=delay,
+                duration_seconds=duration_seconds,
+                allow_reconnect=True,
+                reconnect_timeout=SAFE_MULTI_RECONNECT_TIMEOUT,
+            )
+            conn.last_snapshot = _snapshot_to_dict(snapshot)
+            conn.last_game_start_at = time.time()
+        except Exception as exc:
+            return None, {
+                "address": conn.address,
+                "error": self._format_error(exc),
+            }
+
+        self._schedule_event(
+            "game_start",
+            {
+                "address": conn.address,
+                "name": conn.name,
+                "startup_performed": True,
+                "force_startup": force_startup,
+                "delay": delay,
+                "duration_seconds": duration_seconds,
+                "slot": slot,
+                "team": team,
+                "game_start_at": conn.last_game_start_at,
+                "multi": True,
+                "recovery_used": recovery_used,
+            },
+        )
+        return {
+            "address": conn.address,
+            "startup_performed": True,
+            "last_snapshot": conn.last_snapshot,
+            "slot": slot,
+            "team": team,
+            "duration_seconds": duration_seconds,
+            "game_start_at": conn.last_game_start_at,
+            "recovery_used": recovery_used,
+        }, None
+
     async def _run_multiplayer_start_sequence(
         self,
         *,
@@ -1730,8 +1759,6 @@ class BleHub:
                 async with conn.op_lock:
                     if attempt == 2:
                         await conn.gun.startup(volume=startup_volume)
-                        if delay > 0:
-                            await asyncio.sleep(min(delay, 0.12))
                     snapshot = await conn.gun.send_multiplayer_game_setup(
                         delay=delay,
                         slot=slot,
@@ -1748,8 +1775,6 @@ class BleHub:
                         and int(getattr(snapshot, "name_b", 0) or 0) == 0
                     ):
                         await conn.gun.write_config(level=1, name_a=1, name_b=1)
-                        if delay > 0:
-                            await asyncio.sleep(min(delay, 0.12))
                         snapshot = await conn.gun.send_multiplayer_game_setup(
                             delay=delay,
                             slot=slot,
@@ -1761,7 +1786,6 @@ class BleHub:
             except Exception as exc:
                 last_error = exc
                 if attempt == 1:
-                    await asyncio.sleep(0.35)
                     continue
                 break
         assert last_error is not None

@@ -42,7 +42,7 @@ class ConfigRequest(BaseModel):
 
 
 class GameStartRequest(BaseModel):
-    delay: float = Field(default=0.12, ge=0.08, le=0.30)
+    delay: float = Field(default=0.0, ge=0.0, le=0.30)
     startup_volume: int = Field(default=0, ge=0, le=31)
     force_startup: bool = True
     duration_seconds: int = Field(default=300, ge=30, le=3600)
@@ -52,7 +52,7 @@ class GameStartRequest(BaseModel):
 
 class MultiGameStartRequest(BaseModel):
     addresses: list[str] = Field(default_factory=list)
-    delay: float = Field(default=0.12, ge=0.08, le=0.30)
+    delay: float = Field(default=0.0, ge=0.0, le=0.30)
     startup_volume: int = Field(default=0, ge=0, le=31)
     force_startup: bool = True
     duration_seconds: int = Field(default=300, ge=30, le=3600)

@@ -1167,7 +1167,7 @@ async function startGameMultiAdmin() {
 }
 
 async function startGameMultiSetup() {
-  const delay = Number(document.getElementById("game-delay").value || 0.12);
+  const delay = Number(document.getElementById("game-delay").value || 0);
   const durationSeconds = Number(document.getElementById("setup-game-duration").value);
   const startupVolume = Number(document.getElementById("setup-game-startup-volume").value);
   const forceStartup = document.getElementById("setup-force-startup").checked;
