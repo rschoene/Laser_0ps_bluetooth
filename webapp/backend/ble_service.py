@@ -582,6 +582,7 @@ class BleHub:
                 )
 
             team_profiles = self._resolve_multi_team_profiles(requested_conns)
+            self._validate_multi_team_mode(team_profiles)
             prepared = [
                 {
                     "address": conn.address,
@@ -1618,13 +1619,38 @@ class BleHub:
             if next_slot > SAFE_SLOT_MAX:
                 next_slot = SAFE_SLOT_MIN
             slot = next_slot
-            team = SAFE_MULTIPLAYER_FFA_TEAM
+            existing_teams = {team for _slot, team in profiles.values()}
+            if existing_teams == {SAFE_MULTIPLAYER_FFA_TEAM}:
+                team = SAFE_MULTIPLAYER_FFA_TEAM
+            elif existing_teams and existing_teams.isdisjoint(
+                {SAFE_MULTIPLAYER_FFA_TEAM}
+            ):
+                team = self._default_team_for_slot(slot)
+            else:
+                team = SAFE_MULTIPLAYER_FFA_TEAM
             profiles[key] = (slot, team)
             conn.assigned_slot = slot
             conn.assigned_team = team
             used.add(slot)
             next_slot += 1
         return profiles
+
+    def _validate_multi_team_mode(
+        self,
+        profiles: dict[str, tuple[int, int]],
+    ) -> None:
+        teams = {int(team) for _slot, team in profiles.values()}
+        if not teams:
+            return
+        if teams == {SAFE_MULTIPLAYER_FFA_TEAM}:
+            return
+        if teams.issubset({0, 1}):
+            return
+        raise ValueError(
+            "unsupported multiplayer team mix: use either red-vs-blue only "
+            "(teams 0/1) or all violet (team 2). mixed violet with red/blue "
+            "causes hit counting to fail"
+        )
 
     def _default_team_for_slot(self, slot: int) -> int:
         # Keep a stable 0/1 rotation independent of absolute slot numbers.

@@ -114,6 +114,7 @@
   "error.deviceNotFound": "Gerät nicht gefunden.",
   "error.timeout": "Zeitüberschreitung bei der Operation.",
   "error.permissionDenied": "Zugriff verweigert.",
+  "error.multiplayerTeamModeUnsupported": "Ungültige Team-Kombination: entweder nur Rot vs Blau (Teams 0/1) oder alle Violett (Team 2).",
   "error.liveReconnectInProgress": "Verbindung unterbrochen, automatische Wiederverbindung läuft.",
   "error.startPartialFailure": "Start teilweise fehlgeschlagen (gestartet {started}/{requested}, Fehler {failed}).",
   "error.startAborted": "Start wurde abgebrochen.",

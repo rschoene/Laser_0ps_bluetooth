@@ -174,6 +174,13 @@ function localizeErrorDetail(detail, status) {
   if (lower.includes("permission denied") || lower.includes("access denied")) {
     return t("error.permissionDenied");
   }
+  if (
+    lower.includes("unsupported multiplayer team mix") ||
+    lower.includes("mixed violet with red/blue") ||
+    (lower.includes("teams 0/1") && lower.includes("all violet"))
+  ) {
+    return t("error.multiplayerTeamModeUnsupported");
+  }
   if (lower.includes("failed to fetch")) {
     return t("error.network");
   }
@@ -312,6 +319,22 @@ async function api(path, options = {}) {
 
 function getTargetAddress() {
   return targetAddressInput.value.trim();
+}
+
+function isTargetConnected(address) {
+  const key = normAddress(address);
+  if (!key) return false;
+  const entry = liveByAddress.get(key);
+  if (!entry) return false;
+  return String(entry.connection_state || "").toLowerCase() === "connected";
+}
+
+function clearTargetIfMatches(address) {
+  const current = getTargetAddress();
+  if (!current) return;
+  if (normAddress(current) !== normAddress(address)) return;
+  targetAddressInput.value = "";
+  notificationsBox.textContent = t("error.noTargetAddressSet");
 }
 
 function mustTargetAddress() {
@@ -665,6 +688,11 @@ function applyConnectionList(connections) {
       liveByAddress.delete(key);
     }
   }
+  const currentTarget = getTargetAddress();
+  if (currentTarget && !present.has(normAddress(currentTarget))) {
+    targetAddressInput.value = "";
+    notificationsBox.textContent = t("error.noTargetAddressSet");
+  }
   renderConnections(connections);
   renderSetupTable(connections);
   renderLiveStatus();
@@ -744,6 +772,7 @@ function handleConnectionEvent(payload, ts) {
 
   if (payload.action === "disconnected") {
     removeLiveEntry(payload.address);
+    clearTargetIfMatches(payload.address);
     pushLiveLine(
       `${ts} ${t("live.disconnected", { address: payload.address || t("misc.empty") })}`
     );
@@ -1027,6 +1056,7 @@ async function disconnectDevice(address) {
     method: "POST",
     body: JSON.stringify({}),
   });
+  clearTargetIfMatches(address);
   await refreshConnections();
   await refreshRanking();
   return result;
@@ -1223,7 +1253,21 @@ async function refreshNotifications() {
     notificationsBox.textContent = t("error.noTargetAddressSet");
     return { items: [] };
   }
-  const result = await api(`/api/notifications/${encodeURIComponent(address)}`);
+  if (!isTargetConnected(address)) {
+    notificationsBox.textContent = t("error.deviceNotConnected");
+    return { items: [] };
+  }
+  let result;
+  try {
+    result = await api(`/api/notifications/${encodeURIComponent(address)}`);
+  } catch (err) {
+    if (Number(err?.status) === 404) {
+      clearTargetIfMatches(address);
+      notificationsBox.textContent = t("error.deviceNotConnected");
+      return { items: [] };
+    }
+    throw err;
+  }
   const lines = (result.items || []).map((item) => {
     const time = new Date(item.ts * 1000).toLocaleTimeString(currentLanguage);
     return `${time}  ${item.raw}  ${item.decoded}`;

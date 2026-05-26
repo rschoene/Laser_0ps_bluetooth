@@ -38,6 +38,10 @@ Open:
 
 - Legacy `POST /api/stats/{address}` is disabled in safe mode
 - `POST /api/game/start-multi` requires at least 2 connected blasters
+- Multiplayer teams must be either:
+  - red-vs-blue only (`0/1`)
+  - or all-violet (`2`) for free-for-all
+  - mixed violet with red/blue is blocked because hits are not counted reliably
 - Some blaster profiles still require a manual reload press after start to confirm round activation
 
 ## Safety Mode (Enabled)
@@ -48,9 +52,9 @@ The backend enforces conservative safety limits:
 - BLE writes are throttled (minimum spacing)
 - Level is limited to `1..5`
 - Name indexes are limited to `0..49`
-- Team is limited to `0..1`
+- Team is limited to `0..2`
 - Slot is limited to `2..5`
-- Start command delay is limited to `0.08..0.30 s`
+- Start command delay is limited to `0.00..0.30 s`
 - Multiplayer start runs as an exclusive operation to avoid command collisions
 
 Important: because this is reverse-engineered firmware behavior, absolute guarantees are

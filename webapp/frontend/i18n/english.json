@@ -114,6 +114,7 @@
   "error.deviceNotFound": "Device not found.",
   "error.timeout": "Operation timed out.",
   "error.permissionDenied": "Permission denied.",
+  "error.multiplayerTeamModeUnsupported": "Invalid team setup: use either red-vs-blue only (teams 0/1) or all violet (team 2).",
   "error.liveReconnectInProgress": "Connection interrupted, automatic reconnect in progress.",
   "error.startPartialFailure": "Start partially failed (started {started}/{requested}, errors {failed}).",
   "error.startAborted": "Start was aborted.",

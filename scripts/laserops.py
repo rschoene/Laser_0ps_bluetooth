@@ -776,8 +776,6 @@ class LaserOpsDevice:
             duration_seconds=duration_seconds,
             delay=delay,
         )
-        if delay > 0:
-            await asyncio.sleep(delay)
         await self.arm_multiplayer_round()
         return snapshot
 
