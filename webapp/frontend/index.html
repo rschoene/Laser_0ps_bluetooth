@@ -114,7 +114,7 @@
           <input id="setup-game-duration" type="number" min="30" max="3600" step="10" value="300">
         </label>
         <label><span data-i18n="label.startupVolume">Pre-start volume (0-31)</span>
-          <input id="setup-game-startup-volume" type="number" min="0" max="31" value="0">
+          <input id="setup-game-startup-volume" type="number" min="0" max="31" value="1">
         </label>
         <label class="check">
           <input id="setup-force-startup" type="checkbox" checked>
@@ -190,6 +190,7 @@
             <th data-i18n="table.trigger">Trigger</th>
             <th data-i18n="table.reload">Reload</th>
             <th data-i18n="table.ammo">Ammo</th>
+            <th data-i18n="table.life">Life</th>
             <th data-i18n="table.status">Status</th>
             <th data-i18n="table.lastEvent">Last event</th>
           </tr>
@@ -211,6 +212,7 @@
         </label>
         <button id="btn-set-auto-reconnect" type="button" data-i18n="button.saveAutomation">Save auto mode</button>
         <button id="btn-reconnect" type="button" data-i18n="button.reconnect">Reconnect</button>
+        <button id="btn-restart-backend" type="button" data-i18n="button.restartBackend">Restart backend</button>
       </div>
 
       <div class="row">
@@ -247,7 +249,7 @@
           <input id="game-duration" type="number" min="30" max="3600" step="10" value="300">
         </label>
         <label><span data-i18n="label.startupVolume">Pre-start volume (0-31)</span>
-          <input id="game-startup-volume" type="number" min="0" max="31" value="0">
+          <input id="game-startup-volume" type="number" min="0" max="31" value="1">
         </label>
         <label class="check">
           <input id="force-startup" type="checkbox" checked>

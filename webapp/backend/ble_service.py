@@ -95,6 +95,14 @@ class ConnectionState:
             "last_status_word": None,
             "last_ammo_family": None,
             "last_ammo_counter": None,
+            "last_life_mode_a": None,
+            "last_life_mode_b": None,
+            "last_life_family": None,
+            "last_life_counter": None,
+            "last_life_marker_family": None,
+            "last_life_marker_counter": None,
+            "respawn_ready_count": 0,
+            "last_respawn_ready_ts": None,
             "last_reload_variant": None,
             "last_stat_type": None,
             "last_stat_counter": None,
@@ -142,12 +150,26 @@ class ConnectionState:
             state["last_ammo_family"] = payload[1]
             state["last_ammo_counter"] = payload[-1]
             return
+        if len(payload) == 5 and payload[0] == 0x30 and payload[3] == 0x02:
+            state["last_life_mode_a"] = payload[1]
+            state["last_life_mode_b"] = payload[2]
+            state["last_life_family"] = payload[3]
+            state["last_life_counter"] = payload[4]
+            return
         if len(payload) == 5 and payload[:3] == bytes([0x30, 0x01, 0x3F]):
             state["last_stat_type"] = payload[3]
             state["last_stat_counter"] = payload[4]
             return
+        if payload == bytes([0x3F]):
+            state["respawn_ready_count"] += 1
+            state["last_respawn_ready_ts"] = ts
+            return
         if payload == bytes([0x3E, 0x01, 0x00]):
             state["stats_terminal_count"] += 1
+            return
+        if len(payload) == 3 and payload[0] == 0x3E:
+            state["last_life_marker_family"] = payload[1]
+            state["last_life_marker_counter"] = payload[2]
             return
 
 
@@ -1252,29 +1274,71 @@ class BleHub:
         participant_connections: list[ConnectionState],
         slots: tuple[int, ...],
     ) -> tuple[dict[int, dict[str, int]], str | None, str | None]:
-        last_error: str | None = None
-        for conn in participant_connections:
-            if not conn.gun.is_connected:
+        connected = [conn for conn in participant_connections if conn.gun.is_connected]
+        if not connected:
+            return {}, None, "no connected device available for round slot stats"
+
+        slot_totals: dict[int, dict[str, int]] = {
+            int(slot): {"hits": 0, "kills": 0} for slot in slots
+        }
+        slot_reply_counts: dict[int, int] = {int(slot): 0 for slot in slots}
+        source_errors: list[str] = []
+        used_sources: list[str] = []
+
+        for conn in connected:
+            source_used = False
+            async with conn.op_lock:
+                for slot in slots:
+                    try:
+                        reply = await conn.gun.request_round_slot_stats(
+                            slot=int(slot),
+                            timeout=2.5,
+                        )
+                    except Exception as exc:
+                        source_errors.append(f"{conn.address}/slot{int(slot)}: {exc}")
+                        continue
+                    if not isinstance(reply, RoundSlotStatsReply):
+                        source_errors.append(
+                            f"{conn.address}/slot{int(slot)}: invalid round slot stats reply"
+                        )
+                        continue
+                    slot_key = int(slot)
+                    slot_totals[slot_key]["hits"] += int(reply.hits)
+                    slot_totals[slot_key]["kills"] += int(reply.kills)
+                    slot_reply_counts[slot_key] += 1
+                    source_used = True
+            if source_used:
+                used_sources.append(conn.address)
+
+        merged_stats: dict[int, dict[str, int]] = {}
+        missing_slots: list[int] = []
+        for slot in slots:
+            slot_key = int(slot)
+            if int(slot_reply_counts.get(slot_key, 0)) <= 0:
+                missing_slots.append(slot_key)
                 continue
-            try:
-                async with conn.op_lock:
-                    replies = await conn.gun.collect_round_slot_stats(
-                        slots=slots,
-                        per_slot_timeout=2.5,
-                    )
-            except Exception as exc:
-                last_error = str(exc)
-                continue
-            stats: dict[int, dict[str, int]] = {}
-            for reply in replies:
-                if not isinstance(reply, RoundSlotStatsReply):
-                    continue
-                stats[int(reply.slot)] = {
-                    "hits": int(reply.hits),
-                    "kills": int(reply.kills),
-                }
-            return stats, conn.address, None
-        return {}, None, last_error
+            merged_stats[slot_key] = {
+                "hits": int(slot_totals[slot_key]["hits"]),
+                "kills": int(slot_totals[slot_key]["kills"]),
+            }
+
+        if not merged_stats:
+            if source_errors:
+                return {}, None, "; ".join(source_errors)
+            return {}, None, "round slot stats unavailable"
+
+        stats_source_address = ",".join(used_sources) if used_sources else None
+        stats_error: str | None = None
+        if missing_slots:
+            stats_error = "missing slots: " + ", ".join(str(slot) for slot in missing_slots)
+        if source_errors:
+            extra = "; ".join(source_errors)
+            if stats_error:
+                stats_error = f"{stats_error} | {extra}"
+            else:
+                stats_error = extra
+
+        return merged_stats, stats_source_address, stats_error
 
     def _empty_ranking_snapshot(self) -> dict[str, Any]:
         return {

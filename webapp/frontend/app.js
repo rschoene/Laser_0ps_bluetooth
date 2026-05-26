@@ -453,6 +453,10 @@ function renderLiveStatus() {
       ls.last_ammo_counter == null
         ? t("misc.empty")
         : `0x${Number(ls.last_ammo_counter).toString(16).padStart(2, "0")}`;
+    const life =
+      ls.last_life_counter == null
+        ? t("misc.empty")
+        : String(Number(ls.last_life_counter));
     const status =
       ls.last_status_word == null
         ? t("misc.empty")
@@ -467,6 +471,7 @@ function renderLiveStatus() {
       <td>${ls.trigger_count ?? 0}</td>
       <td>${ls.reload_count ?? 0}</td>
       <td>${escapeHtml(ammo)}</td>
+      <td>${escapeHtml(life)}</td>
       <td>${escapeHtml(status)}</td>
       <td>${escapeHtml(ls.last_event || t("misc.empty"))}</td>
     `;
@@ -1094,6 +1099,56 @@ async function reconnectNow() {
   return result;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForBackendHealthy(timeoutMs = 30000, intervalMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await api("/api/health");
+      return true;
+    } catch (_err) {
+      // keep waiting until timeout
+    }
+    await sleep(intervalMs);
+  }
+  return false;
+}
+
+async function restartBackend() {
+  const confirmed = window.confirm(t("confirm.restartBackend"));
+  if (!confirmed) {
+    return { status: "cancelled" };
+  }
+
+  const result = await api("/api/server/restart", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+
+  setStatus(t("status.apiUnknown"), true);
+  setLiveState(t("status.liveRetrying"), false);
+  if (liveSource) {
+    liveSource.close();
+    liveSource = null;
+  }
+
+  const healthy = await waitForBackendHealthy(30000, 500);
+  if (!healthy) {
+    const err = new Error(t("error.backendRestartTimeout"));
+    err.status = 504;
+    err.detail = t("error.backendRestartTimeout");
+    throw err;
+  }
+
+  openLiveStream();
+  await refreshConnections();
+  await refreshRanking();
+  return result;
+}
+
 async function startup() {
   const address = mustTargetAddress();
   const volume = Number(document.getElementById("startup-volume").value);
@@ -1363,6 +1418,13 @@ bindClick("btn-set-auto-reconnect", () =>
 );
 bindClick("btn-reconnect", () =>
   runAction(reconnectNow, { contextKey: "context.liveConnection" })
+);
+bindClick("btn-restart-backend", () =>
+  runAction(restartBackend, {
+    contextKey: "context.backendRestart",
+    button: document.getElementById("btn-restart-backend"),
+    busyText: t("button.restartingBackend"),
+  })
 );
 bindClick("btn-startup", () => runAction(startup, { contextKey: "context.start" }));
 bindClick("btn-set-volume", () =>

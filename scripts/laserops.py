@@ -274,6 +274,22 @@ def decode_notification(payload: bytes) -> str:
         shots = (payload[1] << 8) | payload[2]
         return f"round_shot_counter shots={shots} raw={h}"
 
+    if h == "3f":
+        return "respawn_ready_marker raw=3f (inferred)"
+
+    if len(payload) == 5 and payload[0] == 0x30 and payload[3] == 0x02:
+        return (
+            f"life_state_update mode_a=0x{payload[1]:02x} mode_b=0x{payload[2]:02x} "
+            f"family=0x{payload[3]:02x} "
+            f"counter=0x{payload[4]:02x} raw={h} (inferred)"
+        )
+
+    if len(payload) == 3 and payload[0] == 0x3E and h != "3e0100":
+        return (
+            f"life_state_marker family=0x{payload[1]:02x} "
+            f"counter=0x{payload[2]:02x} raw={h} (inferred)"
+        )
+
     round_slot = decode_round_slot_stats(payload)
     if round_slot is not None:
         return (

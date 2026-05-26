@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sys
 from contextlib import asynccontextmanager
@@ -53,7 +54,7 @@ class GameStartRequest(BaseModel):
 class MultiGameStartRequest(BaseModel):
     addresses: list[str] = Field(default_factory=list)
     delay: float = Field(default=0.0, ge=0.0, le=0.30)
-    startup_volume: int = Field(default=0, ge=0, le=31)
+    startup_volume: int = Field(default=1, ge=0, le=31)
     force_startup: bool = True
     duration_seconds: int = Field(default=300, ge=30, le=3600)
 
@@ -184,6 +185,21 @@ async def _enable_bluetooth_host() -> dict[str, object]:
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/server/restart")
+async def restart_server() -> dict[str, object]:
+    restart_argv = [sys.executable, *sys.argv]
+
+    async def _restart_soon() -> None:
+        await asyncio.sleep(0.75)
+        try:
+            os.execv(sys.executable, restart_argv)
+        except Exception:
+            os._exit(1)
+
+    asyncio.create_task(_restart_soon())
+    return {"status": "restarting", "pid": os.getpid()}
 
 
 @app.get("/api/meta/routes")
