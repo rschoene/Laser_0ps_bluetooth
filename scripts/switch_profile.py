@@ -3,6 +3,9 @@
 
 !! Untested – use at your own risk. No guarantee. !!
 
+python scripts/switch_profile.py --address <MAC> --to alpha --dry-run
+python scripts/switch_profile.py --address <MAC> --to alpha
+
 switch_profile.py - Switch a blaster config template profile between alpha/delta.
 
 This script writes a full 13-byte 0x36 config payload, then sends 0x57 commit.
