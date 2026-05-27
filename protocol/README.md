@@ -117,6 +117,7 @@ Observed forms:
 | B    | `36 00 0a 02 02 03 00 0a LL NN MM 00 04` | Later phase of some tests  |
 | C    | `36 00 0d 03 02 03 00 0f LL NN MM 00 VV` | Level 4+ state (Test 6/7)  |
 | D    | `36 00 12 ?? ?? ?? ?? 0a LL NN MM 00 VV` | Alternate profile (Test 10)|
+| E    | `36 03 AA DD 02 03 00 HH LL NN MM 00 RR` | High-level g2 profile (Test 16, candidate correlation) |
 
 Field mapping for byte 8 (`LL`) and bytes 9–10 (`NN MM`) — same layout as the startup snapshot.
 
@@ -158,6 +159,34 @@ Test 10 shows a second config template family while preserving the same `LL NN M
 ```
 
 This confirms that bytes before `LL NN MM` are profile/firmware dependent framing fields, while byte 8 (`LL`) and bytes 9–10 (`NN MM`) remain stable.
+
+Test 16 adds a third config template family for a higher-level g2 profile while preserving the same `LL NN MM` positions:
+
+```
+36030a020203000a0c03050004  # baseline in this family: ammo 10, damage 2, health 10, reactivation 10 s
+36030a020203000f0c03050004  # health 15
+36030a02020300140c03050004  # health 20
+36030d020203000a0c03050004  # ammo 13
+360310020203000a0c03050004  # ammo 16
+36030a030203000a0c03050004  # damage 3
+36030a040203000a0c03050004  # damage 4
+36030a020203000a0c03050003  # reactivation 9 s
+36030a020203000a0c03050002  # reactivation 8 s
+```
+
+Candidate correlation for this Test 16 family:
+
+| Byte | Symbol | Candidate meaning | Evidence from Test 16 |
+|------|--------|-------------------|-----------------------|
+| 1    | `03`   | profile-family marker | Constant across all observed Test 16 writes |
+| 2    | `AA`   | ammo-capacity/profile byte | `0a` → `0d` → `10` as UI ammo changes `10` → `13` → `16` |
+| 3    | `DD`   | damage-profile byte | `02` → `03` → `04` as UI damage changes `2` → `3` → `4` |
+| 7    | `HH`   | health-capacity/profile byte | `0a` → `0f` → `14` as UI health changes `10` → `15` → `20` |
+| 8    | `LL`   | level | Constant `0c` (level 12) across the run set |
+| 9–10 | `NN MM` | name bytes | Constant `03 05` for `Atom Beast` |
+| 12   | `RR`   | reactivation-related selector | `04` → `03` → `02` as UI reactivation time changes `10 s` → `9 s` → `8 s` |
+
+This mapping is still **candidate-level**, not a full decode: the bytes correlate cleanly with the UI values in Test 16, but they should still be treated as profile selectors rather than universally direct runtime counters until corroborated on additional guns/levels. The two reload-time attempts in Test 16 produced no visible UI change and no `36` delta, so they do not establish a reload-time encoding.
 
 Other guns from Test 1 (no later progression data available):
 
@@ -218,7 +247,7 @@ Forms A and B share the same bytes 2, 3, 7 (`0a`, `02`, `0a`).  These are consta
 
 The same byte positions therefore carry **different** fixed values depending on whether the message is a startup snapshot (`35 ...`) or a level 4+ config write (`36 ...` form C).  The snapshot always uses `0a` in those positions; the config write uses `0d` / `0f` at level 4+.  This asymmetry confirms the two message types have independent fixed fields and the `0a` values in the snapshot are not echoed game-stats.
 
-The transition in the config write from (0a, 02, 0a) to (0d, 03, 0f) is observed when g0 advances from level 3 (3 upgrades) to level 4 (4 upgrades).  At level 5 (still 4 upgrades of different types) these bytes remain at (0d, 03, 0f), so the change is not driven solely by upgrade type.  Whether the trigger is the **level threshold** or the **4th upgrade slot** being filled cannot be determined from the available captures; a minimal capture comparing a level-4 gun before and after its 4th upgrade would be needed to disambiguate.  **Confidence: inferred.**
+The transition in the config write from (0a, 02, 0a) to (0d, 03, 0f) is observed when g0 advances from level 3 (3 upgrades) to level 4 (4 upgrades).  At level 5 (still 4 upgrades of different types) these bytes remain at (0d, 03, 0f), so the change is not driven solely by upgrade type.  Test 16 further shows a distinct high-level family where the corresponding candidate profile bytes vary as `(AA, DD, HH) = (0a/0d/10, 02/03/04, 0a/0f/14)` while `LL NN MM` remain stable.  Whether the earlier g0 change was triggered by the **level threshold** or the **4th upgrade slot** being filled still cannot be determined from the available captures; a minimal capture comparing a level-4 gun before and after its 4th upgrade would be needed to disambiguate.  **Confidence: inferred.**
 
 ---
 

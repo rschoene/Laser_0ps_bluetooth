@@ -190,28 +190,29 @@
         "36 00 0d 03 02 03 00 0f LL NN MM 00 VV",
         "36 00 12 01 02 00 01 0a LL NN MM 00 0a",
         "36 00 12 01 03 03 01 0a LL NN MM 00 04",
-        "36 00 12 02 03 03 01 0a LL NN MM 00 04"
+        "36 00 12 02 03 03 01 0a LL NN MM 00 04",
+        "36 03 AA DD 02 03 00 HH LL NN MM 00 RR"
       ],
       "fields": [
         {
           "name": "ammo_capacity_or_profile",
           "index": 2,
           "symbol": "AA",
-          "meaning": "ammo-capacity related byte (often matches reload_marker_b AA: 0x0a/0x0d/0x12); template-dependent",
+          "meaning": "ammo-capacity related byte (often matches reload_marker_b AA: 0x0a/0x0d/0x12; in Test 16 family 0x0a/0x0d/0x10 tracks UI ammo 10/13/16); template-dependent",
           "confidence": "medium_high"
         },
         {
           "name": "damage_profile",
           "index": 3,
           "symbol": "DD",
-          "meaning": "damage/profile tier byte (correlates with observed damage classes but not a direct per-shot damage value)",
+          "meaning": "damage/profile tier byte (correlates with observed damage classes but not a direct per-shot damage value; Test 16 shows 0x02/0x03/0x04 alongside UI damage 2/3/4)",
           "confidence": "medium"
         },
         {
           "name": "health_capacity_or_profile",
           "index": 7,
           "symbol": "HH",
-          "meaning": "health-capacity related byte (0x0a or 0x0f in standard templates; behaves like max-HP profile)",
+          "meaning": "health-capacity related byte (0x0a or 0x0f in standard templates; Test 16 adds 0x14 and shows 0x0a/0x0f/0x14 alongside UI health 10/15/20)",
           "confidence": "medium_high"
         },
         {
@@ -231,6 +232,13 @@
           "index": 10,
           "symbol": "MM",
           "confidence": "inferred"
+        },
+        {
+          "name": "reactivation_or_mode_selector",
+          "index": 12,
+          "symbol": "RR",
+          "meaning": "trailing mode/upgrade selector; in Test 14, 0x03 vs 0x04 separates reactivation vs reload selection, and in Test 16 family 0x04/0x03/0x02 correlates with UI reactivation 10/9/8 seconds",
+          "confidence": "medium"
         }
       ],
       "notes": [
@@ -241,6 +249,9 @@
         "Byte deltas beyond LL vary across progression/upgrades.",
         "Trailing-byte mapping confirmed by Test 14 in standard single-player template family (...020203000a...): VV=03 for reactivation-only (no reload-speed), VV=04 for reload-only (no reactivation-time).",
         "Tests 6/7 are consistent with the same VV mapping in the level-4+/form-C variant (36 00 0d 03 02 03 00 0f LL NN MM 00 VV).",
+        "Test 16 adds a high-level family with byte 1 fixed at 0x03 and candidate pattern 36 03 AA DD 02 03 00 HH LL NN MM 00 RR.",
+        "Within the Test 16 family, AA correlates with UI ammo 10/13/16, DD with UI damage 2/3/4, HH with UI health 10/15/20, and RR with UI reactivation 10/9/8 seconds.",
+        "The Test 16 mapping is still candidate-level evidence from one gun/run set and should be treated as profile correlation, not a universal direct decode.",
         "Seen trailing variants include 04, 03, and 0a in different phases.",
         "Alternate gun profile (Test 10) uses bytes 2-6: 12 01 02 00 01 or 12 01 03 03 01 or 12 02 03 03 01."
       ]

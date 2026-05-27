@@ -83,7 +83,7 @@ Length: 2 bytes. `XX` = `1f` (31, max) when app persists max volume; `00` when m
 
 ---
 
-## Config Write (Single-Player Mode, Tests 1–7)
+## Config Write (Single-Player Mode, Tests 1–7, 10, 14, 16)
 
 Config writes are observed only in single-player mode.  They are absent from the multiplayer captures (Tests 8–9).
 
@@ -93,6 +93,7 @@ Config writes are observed only in single-player mode.  They are absent from the
 36 00 0a 02 02 01 00 0a  LL  NN  MM  00  0a   ← form A
 36 00 0a 02 02 03 00 0a  LL  NN  MM  00  04   ← form B
 36 00 0d 03 02 03 00 0f  LL  NN  MM  00  VV   ← form C (level 4+)
+36 03 AA DD 02 03 00 HH  LL  NN  MM  00  RR   ← form E (Test 16 high-level family)
 ```
 
 Length: 13 bytes.  **Confidence: confirmed structure; `LL` field high confidence**.
@@ -143,6 +144,30 @@ Test 10 — alternate profile template family:
 ```
 
 These values preserve the same level/name positions (`LL NN MM`) while changing the preceding framing bytes.
+
+Test 16 — high-level gun 2 profile family:
+
+```
+36 03 0a 02 02 03 00 0a  0c  03  05  00  04   ← baseline: ammo 10, damage 2, health 10, react 10 s
+36 03 0a 02 02 03 00 0f  0c  03  05  00  04   ← health 15
+36 03 0a 02 02 03 00 14  0c  03  05  00  04   ← health 20
+36 03 0d 02 02 03 00 0a  0c  03  05  00  04   ← ammo 13
+36 03 10 02 02 03 00 0a  0c  03  05  00  04   ← ammo 16
+36 03 0a 03 02 03 00 0a  0c  03  05  00  04   ← damage 3
+36 03 0a 04 02 03 00 0a  0c  03  05  00  04   ← damage 4
+36 03 0a 02 02 03 00 0a  0c  03  05  00  03   ← react 9 s
+36 03 0a 02 02 03 00 0a  0c  03  05  00  02   ← react 8 s
+```
+
+Candidate correlation for form E only:
+
+- `AA` varies with ammo-capacity UI state: `0a` → `0d` → `10` for ammo `10` → `13` → `16`.
+- `DD` varies with damage UI state: `02` → `03` → `04` for damage `2` → `3` → `4`.
+- `HH` varies with health UI state: `0a` → `0f` → `14` for health `10` → `15` → `20`.
+- `RR` varies with reactivation UI state: `04` → `03` → `02` for reactivation `10 s` → `9 s` → `8 s`.
+- `LL` remains `0c` (level 12), and `NN MM` remain `03 05` (`Atom Beast`) across the run set.
+
+This Test 16 mapping is still candidate-level correlation, not a fully confirmed universal field decode. The two reload-time attempts in Test 16 produced no visible UI change and no `36...` delta, so they do not yet establish a reload-time byte mapping.
 
 ---
 

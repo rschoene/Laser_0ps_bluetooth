@@ -359,3 +359,86 @@ Capture protocol differences after progressing from level 4 to level 5 and chang
   - control writes (`44/49/4a/41/3b/39`)
   - end/stat range (`30013f01xx` upper bound)
 - Record exact byte-level deltas attributable to level 5 and changed upgrade selection
+
+
+## Test 16: High-Level Single-Player Upgrade Correlation (Gun 2)
+
+### Objective
+Probe a higher-level gun profile by isolating one upgrade category at a time and checking how the single-player `36...` config write changes for ammo capacity, damage, health, and reactivation time.
+
+### Background
+- Gun 2 is at level 12 before the capture.
+- Existing tests show `LL NN MM` are stable across template families while other `36...` bytes vary with profile/progression state.
+- Test 14 already isolated the standard-family trailing-byte split between reload-speed and reactivation-time selection.
+
+### Preparations
+- Do NOT delete app data.
+- Ensure only gun 2 is powered on.
+- Confirm before the test:
+  - level = 12
+  - name = Atom Beast
+  - no other guns are connected
+- Enable Bluetooth HCI snoop logging.
+
+### Test setup
+- Connect only gun 2.
+- Use single-player mode only.
+- For each run below:
+  - apply the stated upgrade state in the app
+  - start a single-player game
+  - wait until the startup/config sync completes and at least one `36...` write is captured
+  - cancel the game
+
+### Test execution
+- Reset upgrades, then capture baseline:
+  - no upgrades
+- Health-only runs:
+  - Health 1
+  - Health 2
+- Reset upgrades.
+- Ammunition-only runs:
+  - Ammu 1
+  - Ammu 2
+- Reset upgrades.
+- Damage-only runs:
+  - Damage 1
+  - Damage 2
+- Reset upgrades.
+- Reactivation-only runs:
+  - Reactivation 1
+  - Reactivation 2
+- Reset upgrades.
+- Attempt two Reload Time runs as a negative/control check.
+
+### Data to record during the test
+- Timestamp when gun 2 connects.
+- Timestamp of startup snapshot reception.
+- Timestamp of the first `36...` write for each run.
+- App-visible state for each run:
+  - ammo
+  - damage
+  - health
+  - reactivation time
+  - level
+  - displayed name
+- Whether reload-time selection changes the UI.
+- Any connection drop or anomaly.
+
+### Expected results
+- `LL` should remain stable at level 12 across all runs.
+- `NN MM` should remain stable for `Atom Beast`.
+- A distinct high-level `36...` family should appear, with candidate byte positions that correlate with:
+  - ammo capacity
+  - damage tier
+  - health capacity
+  - reactivation-time selection
+- Reload-time attempts may produce no visible UI change and no `36...` delta; if so, treat that as a negative result rather than a confirmed encoding absence.
+
+### Post-test
+- Export logs from Wireshark.
+- Filter to gun 2 only.
+- Extract `36...` writes from `test_on_android/test_16` only.
+- Compare the baseline and one-category-at-a-time runs.
+- Record the candidate correlation for the observed family:
+  - `36 03 AA DD 02 03 00 HH LL NN MM 00 RR`
+- Keep the mapping explicitly inferential unless confirmed by another gun/profile family.
