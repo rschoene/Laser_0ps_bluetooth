@@ -86,7 +86,8 @@ function applyTranslations() {
 let liveSource = null;
 const liveByAddress = new Map();
 const liveLines = [];
-const MAX_LIVE_LINES = 300;
+const MAX_LIVE_LINES = 2000;
+const LIVE_SEPARATOR = "----------------------------------------";
 const errorEntries = [];
 const MAX_ERROR_LINES = 100;
 const errorLastSeenByFingerprint = new Map();
@@ -446,13 +447,44 @@ function formatLinkState(entry) {
 }
 
 function pushLiveLine(line) {
+  pushLiveBlock([line]);
+}
+
+function pushLiveBlock(lines) {
   if (!liveEventsBox) return;
-  liveLines.push(line);
+  for (const line of lines) {
+    liveLines.push(String(line));
+  }
+  liveLines.push(LIVE_SEPARATOR);
   if (liveLines.length > MAX_LIVE_LINES) {
     liveLines.splice(0, liveLines.length - MAX_LIVE_LINES);
   }
   liveEventsBox.textContent = liveLines.join("\n");
   liveEventsBox.scrollTop = liveEventsBox.scrollHeight;
+}
+
+function formatDebugValue(value) {
+  if (value == null) return t("misc.empty");
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (_err) {
+    return String(value);
+  }
+}
+
+function buildPacketDebugLines(ts, address, packet, liveState) {
+  const safeAddress = address || t("misc.empty");
+  const p = packet || {};
+  const lines = [];
+  lines.push(`${ts} [${safeAddress}] packet ${formatDebugValue(p.direction || "?")} raw=${formatDebugValue(p.raw)}`);
+  lines.push(`decoded: ${formatDebugValue(p.decoded)}`);
+  lines.push(`derived: ${formatDebugValue(p.derived)}`);
+  if (liveState != null) {
+    lines.push(`live_state: ${formatDebugValue(liveState)}`);
+  }
+  return lines;
 }
 
 function upsertLiveEntry(entry) {
@@ -915,12 +947,41 @@ function handleLiveEvent(eventEnvelope) {
       live_state: payload.live_state || {},
     });
     renderLiveStatus();
-    pushLiveLine(
-      `${ts} ${t("live.notification", {
-        address: payload.address || t("misc.empty"),
-        raw: notif.raw || "",
-        decoded: notif.decoded || "",
-      })}`
+    pushLiveBlock(
+      buildPacketDebugLines(
+        ts,
+        payload.address || t("misc.empty"),
+        payload.packet || {
+          direction: "rx",
+          raw: notif.raw || "",
+          decoded: notif.decoded || "",
+          derived: notif.derived || null,
+        },
+        payload.live_state || null
+      )
+    );
+    return;
+  }
+
+  if (eventType === "tx_packet") {
+    if (payload.address) {
+      const existing = liveByAddress.get(normAddress(payload.address)) || {};
+      upsertLiveEntry({
+        address: payload.address,
+        name: payload.name || existing.name,
+        local_name: payload.local_name ?? existing.local_name ?? null,
+        display_name: payload.display_name ?? existing.display_name ?? null,
+        live_state: payload.live_state || existing.live_state || {},
+      });
+      renderLiveStatus();
+    }
+    pushLiveBlock(
+      buildPacketDebugLines(
+        ts,
+        payload.address || t("misc.empty"),
+        payload.packet || {},
+        payload.live_state || null
+      )
     );
     return;
   }
@@ -1027,6 +1088,7 @@ function openLiveStream() {
 
   const eventTypes = [
     "notification",
+    "tx_packet",
     "connection",
     "game_session",
     "startup",

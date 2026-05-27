@@ -46,6 +46,7 @@ RECONNECT_MAX_DELAY = 15.0
 CONNECT_STARTUP_PROBE_TIMEOUT = 5.0
 LOCAL_NAME_MAX_LENGTH = 32
 LOCAL_NAME_STORE_FILENAME = "local_names.json"
+DEBUG_EVENT_LOG_FILENAME = "live_event_log.ndjson"
 
 
 def _snapshot_to_dict(snapshot: Any) -> dict[str, Any]:
@@ -77,6 +78,141 @@ def _detect_blaster_type_from_snapshot_raw(raw_hex: str | None) -> str | None:
     if payload[2] == 0x12 and payload[3] == 0x01 and payload[4] == 0x02:
         return "DeltaBurst"
     return "Unknown"
+
+
+def _decode_tx_packet(payload: bytes) -> str:
+    if not payload:
+        return "tx_empty"
+    if payload == b"\x35":
+        return "startup_query"
+    if len(payload) == 13 and payload[0] == 0x36:
+        return (
+            f"config_write level={payload[8]} "
+            f"name_parts=(0x{payload[9]:02x}, 0x{payload[10]:02x}) raw={payload.hex()}"
+        )
+    if payload == b"\x57":
+        return "config_apply_commit"
+    if len(payload) == 2 and payload[0] == 0x5B:
+        return f"volume_set value={payload[1]} raw={payload.hex()}"
+    if payload == b"\x51":
+        return "status_poll"
+    if len(payload) == 3 and payload[0] == 0x49:
+        return (
+            f"multiplayer_assignment slot={payload[1]} team={payload[2]} "
+            f"raw={payload.hex()}"
+        )
+    if len(payload) == 12 and payload[0] == 0x4A:
+        duration = (payload[4] << 8) | payload[5]
+        return f"multiplayer_game_config duration_seconds={duration} raw={payload.hex()}"
+    if payload == b"\x58":
+        return "multiplayer_round_arm"
+    if len(payload) == 2 and payload[0] == 0x54:
+        return f"round_slot_stats_request slot={payload[1]} raw={payload.hex()}"
+    if len(payload) == 6 and payload[:3] == bytes([0x5A, 0x3F, 0x01]):
+        return f"stat_request type=0x{payload[3]:02x} raw={payload.hex()}"
+    if payload == b"\x42":
+        return "session_close"
+    if len(payload) == 4 and payload[0] == 0x37:
+        return f"game_ctrl raw={payload.hex()}"
+    if payload in (b"\x44\x01",):
+        return f"game_mode_flag raw={payload.hex()}"
+    if payload[:1] in (b"\x41", b"\x3B", b"\x39"):
+        return f"game_setup_param raw={payload.hex()}"
+    return f"tx_unknown raw={payload.hex()}"
+
+
+def _derive_packet_fields(payload: bytes, *, direction: str) -> dict[str, Any]:
+    if not payload:
+        return {"direction": direction, "length": 0, "msg_id": None}
+    msg_id = int(payload[0])
+    out: dict[str, Any] = {
+        "direction": direction,
+        "length": len(payload),
+        "msg_id": f"0x{msg_id:02x}",
+    }
+    if direction == "tx":
+        if msg_id == 0x36 and len(payload) == 13:
+            out.update(
+                {
+                    "template_prefix": payload[1:8].hex(),
+                    "level": int(payload[8]),
+                    "name_a": int(payload[9]),
+                    "name_b": int(payload[10]),
+                    "tail_marker": f"0x{payload[12]:02x}",
+                }
+            )
+        elif msg_id == 0x49 and len(payload) == 3:
+            out.update({"slot": int(payload[1]), "team": int(payload[2])})
+        elif msg_id == 0x4A and len(payload) == 12:
+            out.update(
+                {
+                    "duration_seconds": int((payload[4] << 8) | payload[5]),
+                    "timer_tail": payload[10:12].hex(),
+                }
+            )
+        elif msg_id == 0x5B and len(payload) == 2:
+            out.update({"volume": int(payload[1])})
+        elif msg_id == 0x54 and len(payload) == 2:
+            out.update({"slot": int(payload[1])})
+        elif msg_id == 0x5A and len(payload) == 6 and payload[:3] == bytes([0x5A, 0x3F, 0x01]):
+            out.update({"stat_type": int(payload[3])})
+        return out
+
+    # RX (notification) derived values
+    if msg_id == 0x35 and len(payload) == 13:
+        raw_hex = payload.hex()
+        out.update(
+            {
+                "level": int(payload[8]),
+                "name_a": int(payload[9]),
+                "name_b": int(payload[10]),
+                "profile_guess": _detect_blaster_type_from_snapshot_raw(raw_hex),
+            }
+        )
+    elif msg_id == 0x51 and len(payload) == 3:
+        out.update({"status_word": int((payload[1] << 8) | payload[2])})
+    elif msg_id == 0x32 and len(payload) >= 2:
+        out.update({"ammo_family": int(payload[1]), "ammo_counter": int(payload[-1])})
+    elif (
+        msg_id == 0x30
+        and len(payload) == 5
+        and int(payload[3]) == 0x02
+    ):
+        out.update(
+            {
+                "life_mode_a": int(payload[1]),
+                "life_mode_b": int(payload[2]),
+                "life_family": int(payload[3]),
+                "life_counter": int(payload[4]),
+            }
+        )
+    elif msg_id == 0x3E and len(payload) == 3:
+        out.update(
+            {
+                "marker_family": int(payload[1]),
+                "marker_counter": int(payload[2]),
+                "stats_terminal": bool(payload == bytes([0x3E, 0x01, 0x00])),
+            }
+        )
+    elif msg_id == 0x3F and len(payload) == 1:
+        out.update({"respawn_ready": True})
+    elif msg_id == 0x47 and len(payload) == 3:
+        out.update({"round_shots": int((payload[1] << 8) | payload[2])})
+    elif msg_id == 0x54 and len(payload) == 5:
+        out.update(
+            {
+                "hits": int(payload[2]),
+                "kills": int(payload[3]),
+                "slot": int(payload[4]),
+            }
+        )
+    elif msg_id == 0x31 and len(payload) == 2:
+        out.update({"reload_variant": int(payload[1])})
+    elif msg_id == 0x49 and len(payload) == 1:
+        out.update({"trigger_event": True})
+    elif msg_id == 0x52 and len(payload) == 1:
+        out.update({"reload_marker": True})
+    return out
 
 
 @dataclass
@@ -224,9 +360,11 @@ class BleHub:
         self._connections_lock = asyncio.Lock()
         self._discovery_lock = asyncio.Lock()
         self._bulk_game_start_lock = asyncio.Lock()
-        self._local_name_store_path = (
-            Path(__file__).resolve().parent / "state" / LOCAL_NAME_STORE_FILENAME
-        )
+        self._state_dir = Path(__file__).resolve().parent / "state"
+        self._state_dir.mkdir(parents=True, exist_ok=True)
+        self._local_name_store_path = self._state_dir / LOCAL_NAME_STORE_FILENAME
+        self._debug_event_log_path = self._state_dir / DEBUG_EVENT_LOG_FILENAME
+        self._debug_event_log_lock = asyncio.Lock()
         self._local_names: dict[str, str] = self._load_local_name_store()
         self._local_names_lock = asyncio.Lock()
         self._game_session_lock = asyncio.Lock()
@@ -301,11 +439,14 @@ class BleHub:
         )
         async with self._local_names_lock:
             placeholder.local_name = self._local_names.get(key)
-        notification_cb, disconnected_cb = self._build_device_callbacks(placeholder)
+        notification_cb, disconnected_cb, write_cb = self._build_device_callbacks(
+            placeholder
+        )
         gun = LaserOpsDevice(
             ble_dev,
             notification_callback=notification_cb,
             disconnected_callback=disconnected_cb,
+            write_callback=write_cb,
         )
         await gun.__aenter__()
         placeholder.gun = gun
@@ -878,9 +1019,16 @@ class BleHub:
 
     def _build_device_callbacks(
         self, conn: ConnectionState
-    ) -> tuple[Callable[[bytes], None], Callable[[], None]]:
+    ) -> tuple[Callable[[bytes], None], Callable[[], None], Callable[[bytes], None]]:
         def _on_notification(payload: bytes) -> None:
             item = conn.on_notification(payload)
+            packet = {
+                "direction": "rx",
+                "raw": payload.hex(),
+                "decoded": item.get("decoded"),
+                "derived": _derive_packet_fields(payload, direction="rx"),
+            }
+            item["packet"] = packet
             self._schedule_event(
                 "notification",
                 {
@@ -889,6 +1037,7 @@ class BleHub:
                     "local_name": conn.local_name,
                     "display_name": self._display_name(conn),
                     "notification": item,
+                    "packet": packet,
                     "live_state": conn.live_state_snapshot(),
                 },
             )
@@ -896,6 +1045,25 @@ class BleHub:
                 self._spawn_background(
                     self._publish_ranking_if_running(conn.address.lower())
                 )
+
+        def _on_write(payload: bytes) -> None:
+            self._schedule_event(
+                "tx_packet",
+                {
+                    "address": conn.address,
+                    "name": conn.name,
+                    "local_name": conn.local_name,
+                    "display_name": self._display_name(conn),
+                    "packet": {
+                        "ts": time.time(),
+                        "direction": "tx",
+                        "raw": payload.hex(),
+                        "decoded": _decode_tx_packet(payload),
+                        "derived": _derive_packet_fields(payload, direction="tx"),
+                    },
+                    "live_state": conn.live_state_snapshot(),
+                },
+            )
 
         def _on_disconnected() -> None:
             self._spawn_background(
@@ -905,7 +1073,7 @@ class BleHub:
                 )
             )
 
-        return _on_notification, _on_disconnected
+        return _on_notification, _on_disconnected, _on_write
 
     async def _handle_unexpected_disconnect(
         self, *, conn: ConnectionState, reason: str
@@ -1057,7 +1225,9 @@ class BleHub:
                 raise LookupError(conn.last_error)
 
             old_gun = conn.gun
-            notification_cb, disconnected_cb = self._build_device_callbacks(conn)
+            notification_cb, disconnected_cb, write_cb = self._build_device_callbacks(
+                conn
+            )
             new_gun = None
             last_exc: Exception | None = None
             used_device = None
@@ -1066,6 +1236,7 @@ class BleHub:
                     candidate,
                     notification_callback=notification_cb,
                     disconnected_callback=disconnected_cb,
+                    write_callback=write_cb,
                 )
                 try:
                     await trial_gun.__aenter__()
@@ -1979,10 +2150,23 @@ class BleHub:
 
     async def _publish_event(self, *, event_type: str, payload: dict[str, Any]) -> None:
         event = self._build_event(event_type=event_type, payload=payload)
+        await self._append_event_to_debug_log(event)
         async with self._subscribers_lock:
             queues = list(self._subscribers.values())
         for queue in queues:
             self._queue_put_drop_oldest(queue, event)
+
+    async def _append_event_to_debug_log(self, event: dict[str, Any]) -> None:
+        line = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
+        async with self._debug_event_log_lock:
+            await asyncio.to_thread(self._append_line_to_file, line)
+
+    def _append_line_to_file(self, line: str) -> None:
+        path = self._debug_event_log_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.write("\n")
 
     def _build_event(self, *, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._event_seq += 1

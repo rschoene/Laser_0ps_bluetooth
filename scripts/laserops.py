@@ -510,6 +510,7 @@ def describe_characteristics(client: BleakClient) -> str:
 
 NotificationCallback = Callable[[bytes], None]
 DisconnectedCallback = Callable[[], None]
+WriteCallback = Callable[[bytes], None]
 
 
 class LaserOpsDevice:
@@ -533,6 +534,7 @@ class LaserOpsDevice:
         device: BLEDevice,
         notification_callback: Optional[NotificationCallback] = None,
         disconnected_callback: Optional[DisconnectedCallback] = None,
+        write_callback: Optional[WriteCallback] = None,
         *,
         safe_mode: bool = True,
         min_write_interval: float = SAFE_DEFAULT_MIN_WRITE_INTERVAL,
@@ -544,6 +546,7 @@ class LaserOpsDevice:
         )
         self._notification_callback = notification_callback
         self._disconnected_callback = disconnected_callback
+        self._write_callback = write_callback
         self._pending: dict[bytes, asyncio.Future] = {}
         self._notify_char = None
         self._write_char = None
@@ -673,6 +676,11 @@ class LaserOpsDevice:
                 self._write_char, data, response=False
             )
             self._last_write_at = loop.time()
+            if self._write_callback is not None:
+                try:
+                    self._write_callback(data)
+                except Exception:
+                    pass
 
     async def _write_and_wait(
         self,
