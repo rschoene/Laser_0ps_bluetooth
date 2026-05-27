@@ -11,18 +11,19 @@ Contributions (additional HCI captures, corrections, clarifications) are welcome
 
 ## Credits
 
-- **Robert Schone (`rschoene`)**
-- **Patrick Kalka (`PatrickKalka-SeriousByte`)**
-
-All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro Android app (see `test_on_android/` for raw logs and analysis).
+- `rschoene`
+- `PatrickKalka-SeriousByte`
 
 ## Project Goals
 
-- Document and validate the BLE protocol in practical usage
+- Document and validate the BLE protocol¹ in practical usage
 - Manage multiple blasters from a browser UI
 - Start and control rounds with explicit slot/team assignment
 - Run reliably as a long-lived local service (Raspberry Pi target)
 - Long term: have an ESP with a display host the game 😉
+
+¹ All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro Android app (see test_on_android/ for raw logs and analysis).
+**Note**: Confidence levels for protocol fields vary.
 
 ## Repository Layout
 
