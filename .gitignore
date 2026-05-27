@@ -29,3 +29,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Runtime state created by the web backend
+webapp/backend/state/

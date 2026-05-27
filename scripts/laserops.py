@@ -79,6 +79,8 @@ MSG_STAT_TERMINAL    = 0x3E   # gun → host: 3e0100
 
 # Session close (low-medium confidence)
 MSG_SESSION_CLOSE    = 0x42   # host → gun: 1 byte
+MSG_ROUND_SHOTS      = 0x47   # gun → host: 3 bytes, end-of-round shot counter
+MSG_ROUND_SLOT_STATS = 0x54   # bidirectional, per-slot hits/kills
 
 # ---------------------------------------------------------------------------
 # Volume constants (confirmed)
@@ -86,6 +88,48 @@ MSG_SESSION_CLOSE    = 0x42   # host → gun: 1 byte
 
 VOLUME_MIN = 0x00  # mute
 VOLUME_MAX = 0x1F  # 31 decimal
+
+# Assignment bounds observed in captures.
+# - slots are seen in low single digits
+# - teams are seen up to 2, with test_12 showing 2 for all-vs-all
+ASSIGNMENT_SLOT_MIN = 0x00
+ASSIGNMENT_SLOT_MAX = 0x05
+ASSIGNMENT_TEAM_MIN = 0x00
+ASSIGNMENT_TEAM_MAX = 0x02
+
+# AR/single-player setup sequence (observed in Tests 2-7; semantics inferred).
+# Keep this AR-only to avoid mixing mode-specific control traffic into multiplayer.
+DEFAULT_GAME_ASSIGNMENT_SLOT = 0x01
+DEFAULT_GAME_ASSIGNMENT_TEAM = 0x00
+DEFAULT_AR_GAME_SETUP_PREFIX: tuple[bytes, ...] = (
+    bytes.fromhex("4401"),
+)
+DEFAULT_AR_GAME_SETUP_SUFFIX: tuple[bytes, ...] = (
+    bytes.fromhex("4a0000000000000000001388"),
+    bytes.fromhex("411388"),
+)
+
+# Multiplayer game setup (observed in Tests 8-9, 11-12; semantics inferred).
+DEFAULT_MULTIPLAYER_SLOT = 0x02
+DEFAULT_MULTIPLAYER_TEAM = 0x02
+DEFAULT_MULTIPLAYER_DURATION_SECONDS = 300
+
+# Safety defaults for write-without-response traffic.
+# - Only allow known command ids in safe mode.
+# - Space writes to reduce burst pressure on firmware.
+SAFE_ALLOWED_WRITE_PREFIXES: frozenset[int] = frozenset({
+    MSG_STARTUP_QUERY,   # 0x35
+    MSG_CONFIG_WRITE,    # 0x36
+    MSG_APPLY_COMMIT,    # 0x57
+    MSG_VOLUME_SET,      # 0x5b
+    MSG_STATUS_POLL,     # 0x51
+    MSG_STAT_REQUEST,    # 0x5a
+    MSG_SESSION_CLOSE,   # 0x42
+    0x44, 0x49, 0x4A, 0x41, 0x3B, 0x39, 0x37,  # observed game controls
+    0x58,  # multiplayer round start / arm
+    0x54,  # multiplayer per-slot stat request
+})
+SAFE_DEFAULT_MIN_WRITE_INTERVAL = 0.08
 
 # Name-id bounds observed in captures (see protocol docs).
 # The app uses separate first/second name lists, so keep separate limits.
@@ -124,6 +168,22 @@ class StatCounterReply:
     """End-of-game stat counter (prefix 30013f, 5 bytes).  Semantics inferred."""
     stat_type: int   # byte 3 — matches the TT byte from the request
     counter: int     # byte 4 — descends to 00
+
+
+@dataclass
+class RoundSlotStatsReply:
+    """
+    Multiplayer round per-slot stats reply.
+
+    Payload format: ``54 00 HH KK SS`` where
+      - HH = hits
+      - KK = kills
+      - SS = slot echo
+    """
+    slot: int
+    hits: int
+    kills: int
+    raw: bytes
 
 
 @dataclass
@@ -170,6 +230,18 @@ def decode_stat_counter(payload: bytes) -> Optional[StatCounterReply]:
     return StatCounterReply(stat_type=payload[3], counter=payload[4])
 
 
+def decode_round_slot_stats(payload: bytes) -> Optional[RoundSlotStatsReply]:
+    """Decode a multiplayer per-slot stats reply (54 00 HH KK SS)."""
+    if len(payload) != 5 or payload[0] != MSG_ROUND_SLOT_STATS or payload[1] != 0x00:
+        return None
+    return RoundSlotStatsReply(
+        slot=payload[4],
+        hits=payload[2],
+        kills=payload[3],
+        raw=bytes(payload),
+    )
+
+
 def decode_notification(payload: bytes) -> str:
     """Human-readable decoding of any known gun→host notification payload."""
     h = payload.hex()
@@ -197,6 +269,33 @@ def decode_notification(payload: bytes) -> str:
 
     if payload[0:1] == b"\x32" and len(payload) >= 2:
         return f"ammo_state family=0x{payload[1]:02x} counter=0x{payload[-1]:02x} raw={h}"
+
+    if len(payload) == 3 and payload[0] == MSG_ROUND_SHOTS:
+        shots = (payload[1] << 8) | payload[2]
+        return f"round_shot_counter shots={shots} raw={h}"
+
+    if h == "3f":
+        return "respawn_ready_marker raw=3f (inferred)"
+
+    if len(payload) == 5 and payload[0] == 0x30 and payload[3] == 0x02:
+        return (
+            f"life_state_update mode_a=0x{payload[1]:02x} mode_b=0x{payload[2]:02x} "
+            f"family=0x{payload[3]:02x} "
+            f"counter=0x{payload[4]:02x} raw={h} (inferred)"
+        )
+
+    if len(payload) == 3 and payload[0] == 0x3E and h != "3e0100":
+        return (
+            f"life_state_marker family=0x{payload[1]:02x} "
+            f"counter=0x{payload[2]:02x} raw={h} (inferred)"
+        )
+
+    round_slot = decode_round_slot_stats(payload)
+    if round_slot is not None:
+        return (
+            f"round_slot_stats slot={round_slot.slot} "
+            f"hits={round_slot.hits} kills={round_slot.kills} raw={h}"
+        )
 
     stat = decode_stat_counter(payload)
     if stat is not None:
@@ -284,6 +383,86 @@ def build_session_close() -> bytes:
     return bytes([MSG_SESSION_CLOSE])
 
 
+def build_round_slot_stats_request(slot: int) -> bytes:
+    """Build multiplayer per-slot stats request ``54 SS``."""
+    safe_slot = max(0, min(0xFF, int(slot)))
+    return bytes([MSG_ROUND_SLOT_STATS, safe_slot])
+
+
+def clamp_assignment_slot(value: int) -> int:
+    """Clamp assignment slot to known-safe observed bounds."""
+    return max(ASSIGNMENT_SLOT_MIN, min(ASSIGNMENT_SLOT_MAX, int(value)))
+
+
+def clamp_assignment_team(value: int) -> int:
+    """Clamp assignment team to known-safe observed bounds."""
+    return max(ASSIGNMENT_TEAM_MIN, min(ASSIGNMENT_TEAM_MAX, int(value)))
+
+
+def build_assignment(slot: int, team: int) -> bytes:
+    """Build assignment payload ``49 SS TT`` with safe bounds."""
+    safe_slot = clamp_assignment_slot(slot)
+    safe_team = clamp_assignment_team(team)
+    return bytes([0x49, safe_slot, safe_team])
+
+
+def build_game_setup_commands(
+    slot: int = DEFAULT_GAME_ASSIGNMENT_SLOT,
+    team: int = DEFAULT_GAME_ASSIGNMENT_TEAM,
+    *,
+    ar_setup_prefix: tuple[bytes, ...] = DEFAULT_AR_GAME_SETUP_PREFIX,
+    ar_setup_suffix: tuple[bytes, ...] = DEFAULT_AR_GAME_SETUP_SUFFIX,
+) -> tuple[bytes, ...]:
+    """
+    Build AR/single-player setup sequence.
+
+    ``49`` assignment packet encodes ``slot`` and ``team`` as bytes 1 and 2.
+    Prefix/suffix commands are mode-specific and optional.
+    """
+    assignment = build_assignment(slot=slot, team=team)
+    return tuple(ar_setup_prefix) + (assignment,) + tuple(ar_setup_suffix)
+
+
+def build_multiplayer_assignment(
+    slot: int = DEFAULT_MULTIPLAYER_SLOT,
+    team: int = DEFAULT_MULTIPLAYER_TEAM,
+) -> bytes:
+    """
+    Build multiplayer assignment payload ``49 SS TT``.
+
+    ``SS`` is the player slot index, ``TT`` is the team/side index.
+    """
+    return build_assignment(slot=slot, team=team)
+
+
+def build_game_mode_init() -> bytes:
+    """Build AR-only mode-init command ``44 01``."""
+    return bytes.fromhex("4401")
+
+
+def build_multiplayer_round_config(
+    duration_seconds: int = DEFAULT_MULTIPLAYER_DURATION_SECONDS,
+) -> bytes:
+    """
+    Build multiplayer round config payload:
+    ``4a 00 0a ff DD DD 00 00 00 00 27 10``.
+    """
+    safe_duration = max(1, min(0xFFFF, int(duration_seconds)))
+    return bytes([
+        0x4A,
+        0x00, 0x0A, 0xFF,
+        (safe_duration >> 8) & 0xFF,
+        safe_duration & 0xFF,
+        0x00, 0x00, 0x00, 0x00,
+        0x27, 0x10,
+    ])
+
+
+def build_multiplayer_round_start() -> bytes:
+    """Build multiplayer round start/arm command ``58``."""
+    return bytes([0x58])
+
+
 # ---------------------------------------------------------------------------
 # Handle resolver (mirrors the approach in definition_protocol/example_ble_protocol_client.py)
 # ---------------------------------------------------------------------------
@@ -330,6 +509,8 @@ def describe_characteristics(client: BleakClient) -> str:
 # ---------------------------------------------------------------------------
 
 NotificationCallback = Callable[[bytes], None]
+DisconnectedCallback = Callable[[], None]
+WriteCallback = Callable[[bytes], None]
 
 
 class LaserOpsDevice:
@@ -352,64 +533,94 @@ class LaserOpsDevice:
         self,
         device: BLEDevice,
         notification_callback: Optional[NotificationCallback] = None,
+        disconnected_callback: Optional[DisconnectedCallback] = None,
+        write_callback: Optional[WriteCallback] = None,
+        *,
+        safe_mode: bool = True,
+        min_write_interval: float = SAFE_DEFAULT_MIN_WRITE_INTERVAL,
     ) -> None:
         self._device = device
-        self._client = BleakClient(device)
+        self._client = BleakClient(
+            device,
+            disconnected_callback=self._on_disconnected_client,
+        )
         self._notification_callback = notification_callback
+        self._disconnected_callback = disconnected_callback
+        self._write_callback = write_callback
         self._pending: dict[bytes, asyncio.Future] = {}
         self._notify_char = None
         self._write_char = None
+        self._safe_mode = safe_mode
+        self._min_write_interval = max(0.0, float(min_write_interval))
+        self._last_write_at = 0.0
+        self._write_lock = asyncio.Lock()
+        self._intentional_disconnect = False
 
     # ---- context manager --------------------------------------------------
 
     async def __aenter__(self) -> "LaserOpsDevice":
-        await self._client.connect()
+        self._intentional_disconnect = False
+        try:
+            await self._client.connect()
 
-        # Ensure service discovery is complete before characteristic lookup.
-        # Bleak API differs by version: some expose get_services(), others
-        # populate services during connect without this method.
-        if hasattr(self._client, "get_services"):
-            await self._client.get_services()
+            # Ensure service discovery is complete before characteristic lookup.
+            # Bleak API differs by version: some expose get_services(), others
+            # populate services during connect without this method.
+            if hasattr(self._client, "get_services"):
+                await self._client.get_services()
 
-        self._notify_char = find_char_by_handle(self._client, NOTIFY_HANDLE)
-        self._write_char  = find_char_by_handle(self._client, WRITE_HANDLE)
+            self._notify_char = find_char_by_handle(self._client, NOTIFY_HANDLE)
+            self._write_char  = find_char_by_handle(self._client, WRITE_HANDLE)
 
-        # ATT handles can differ across firmware revisions; UUIDs are stable.
-        if self._notify_char is None:
-            self._notify_char = find_char_by_uuid(self._client, NOTIFY_CHAR_UUID)
-        if self._write_char is None:
-            self._write_char = find_char_by_uuid(self._client, WRITE_CHAR_UUID)
+            # ATT handles can differ across firmware revisions; UUIDs are stable.
+            if self._notify_char is None:
+                self._notify_char = find_char_by_uuid(self._client, NOTIFY_CHAR_UUID)
+            if self._write_char is None:
+                self._write_char = find_char_by_uuid(self._client, WRITE_CHAR_UUID)
 
-        # If services are unavailable on this backend/version, use UUID strings
-        # directly because Bleak accepts UUID specifiers for I/O calls.
-        if self._notify_char is None and self._client.services is None:
-            self._notify_char = NOTIFY_CHAR_UUID
-        if self._write_char is None and self._client.services is None:
-            self._write_char = WRITE_CHAR_UUID
+            # If services are unavailable on this backend/version, use UUID strings
+            # directly because Bleak accepts UUID specifiers for I/O calls.
+            if self._notify_char is None and self._client.services is None:
+                self._notify_char = NOTIFY_CHAR_UUID
+            if self._write_char is None and self._client.services is None:
+                self._write_char = WRITE_CHAR_UUID
 
-        if self._notify_char is None:
-            raise RuntimeError(
-                "Notify characteristic not found "
-                f"(expected handle 0x{NOTIFY_HANDLE:04x} or UUID {NOTIFY_CHAR_UUID}). "
-                f"Discovered characteristics: {describe_characteristics(self._client)}"
-            )
-        if self._write_char is None:
-            raise RuntimeError(
-                "Write characteristic not found "
-                f"(expected handle 0x{WRITE_HANDLE:04x} or UUID {WRITE_CHAR_UUID}). "
-                f"Discovered characteristics: {describe_characteristics(self._client)}"
-            )
+            if self._notify_char is None:
+                raise RuntimeError(
+                    "Notify characteristic not found "
+                    f"(expected handle 0x{NOTIFY_HANDLE:04x} or UUID {NOTIFY_CHAR_UUID}). "
+                    f"Discovered characteristics: {describe_characteristics(self._client)}"
+                )
+            if self._write_char is None:
+                raise RuntimeError(
+                    "Write characteristic not found "
+                    f"(expected handle 0x{WRITE_HANDLE:04x} or UUID {WRITE_CHAR_UUID}). "
+                    f"Discovered characteristics: {describe_characteristics(self._client)}"
+                )
 
-        await self._client.start_notify(self._notify_char, self._on_notification)
-        return self
+            await self._client.start_notify(self._notify_char, self._on_notification)
+            return self
+        except Exception:
+            self._fail_pending(RuntimeError("ble connection setup failed"))
+            try:
+                if self._client.is_connected:
+                    await self._client.disconnect()
+            except Exception:
+                pass
+            raise
 
     async def __aexit__(self, *_) -> None:
+        self._intentional_disconnect = True
+        self._fail_pending(RuntimeError("ble connection is closing"))
         try:
             if self._notify_char is not None:
                 await self._client.stop_notify(self._notify_char)
         except Exception:
             pass
-        await self._client.disconnect()
+        try:
+            await self._client.disconnect()
+        finally:
+            self._intentional_disconnect = False
 
     # ---- internals --------------------------------------------------------
 
@@ -428,10 +639,48 @@ class LaserOpsDevice:
         if self._notification_callback:
             self._notification_callback(payload)
 
+    def _on_disconnected_client(self, _client: BleakClient) -> None:
+        self._fail_pending(ConnectionError("ble link disconnected"))
+        if self._intentional_disconnect:
+            return
+        if self._disconnected_callback is None:
+            return
+        try:
+            self._disconnected_callback()
+        except Exception:
+            pass
+
+    def _fail_pending(self, exc: Exception) -> None:
+        for key in list(self._pending.keys()):
+            fut = self._pending.pop(key, None)
+            if fut is not None and not fut.done():
+                fut.set_exception(exc)
+
     async def _write(self, data: bytes) -> None:
-        await self._client.write_gatt_char(
-            self._write_char, data, response=False
-        )
+        if not data:
+            raise ValueError("empty payload is not allowed")
+        if not self.is_connected:
+            raise ConnectionError("ble link is not connected")
+        if self._safe_mode and data[0] not in SAFE_ALLOWED_WRITE_PREFIXES:
+            raise ValueError(
+                f"unsafe command blocked in safe_mode: 0x{data[0]:02x}"
+            )
+
+        loop = asyncio.get_running_loop()
+        async with self._write_lock:
+            if self._min_write_interval > 0 and self._last_write_at > 0:
+                elapsed = loop.time() - self._last_write_at
+                if elapsed < self._min_write_interval:
+                    await asyncio.sleep(self._min_write_interval - elapsed)
+            await self._client.write_gatt_char(
+                self._write_char, data, response=False
+            )
+            self._last_write_at = loop.time()
+            if self._write_callback is not None:
+                try:
+                    self._write_callback(data)
+                except Exception:
+                    pass
 
     async def _write_and_wait(
         self,
@@ -441,9 +690,16 @@ class LaserOpsDevice:
     ) -> bytes:
         loop = asyncio.get_event_loop()
         fut: asyncio.Future[bytes] = loop.create_future()
+        if response_prefix in self._pending:
+            raise RuntimeError(
+                f"duplicate in-flight request for response prefix {response_prefix.hex()}"
+            )
         self._pending[response_prefix] = fut
-        await self._write(data)
-        return await asyncio.wait_for(fut, timeout=timeout)
+        try:
+            await self._write(data)
+            return await asyncio.wait_for(fut, timeout=timeout)
+        finally:
+            self._pending.pop(response_prefix, None)
 
     # ---- public API -------------------------------------------------------
 
@@ -454,6 +710,10 @@ class LaserOpsDevice:
     @property
     def name(self) -> str:
         return self._device.name or self._device.address
+
+    @property
+    def is_connected(self) -> bool:
+        return bool(self._client.is_connected)
 
     async def query_startup_snapshot(self, timeout: float = 5.0) -> StartupSnapshot:
         """Query and decode the startup snapshot without changing gun volume."""
@@ -495,6 +755,92 @@ class LaserOpsDevice:
         """
         await self._write(build_config_write(level, name_a, name_b))
         await self._write(build_apply_commit())
+
+    async def send_game_setup(
+        self,
+        delay: float = 0.05,
+        *,
+        slot: int = DEFAULT_GAME_ASSIGNMENT_SLOT,
+        team: int = DEFAULT_GAME_ASSIGNMENT_TEAM,
+    ) -> None:
+        """
+        Send the observed game-start setup sequence for single-player AR mode.
+
+        Command semantics are inferred from captures; byte order is preserved.
+        """
+        for payload in build_game_setup_commands(slot=slot, team=team):
+            await self._write(payload)
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+    async def send_multiplayer_game_setup(
+        self,
+        *,
+        slot: int = DEFAULT_MULTIPLAYER_SLOT,
+        team: int = DEFAULT_MULTIPLAYER_TEAM,
+        volume: int = VOLUME_MAX,
+        duration_seconds: int = DEFAULT_MULTIPLAYER_DURATION_SECONDS,
+        delay: float = 0.05,
+    ) -> StartupSnapshot:
+        """
+        Send multiplayer setup sequence observed in Tests 8-9 and 11-12:
+
+          1) 49 SS TT
+          2) 4a 00 0a ff DD DD 00 00 00 00 27 10
+          3) 5b XX
+          4) 35 and wait for startup snapshot
+          5) 58
+
+        Returns the startup snapshot from step 4.
+        """
+        snapshot = await self.prepare_multiplayer_game_setup(
+            slot=slot,
+            team=team,
+            volume=volume,
+            duration_seconds=duration_seconds,
+            delay=delay,
+        )
+        await self.arm_multiplayer_round()
+        return snapshot
+
+    async def prepare_multiplayer_game_setup(
+        self,
+        *,
+        slot: int = DEFAULT_MULTIPLAYER_SLOT,
+        team: int = DEFAULT_MULTIPLAYER_TEAM,
+        volume: int = VOLUME_MAX,
+        duration_seconds: int = DEFAULT_MULTIPLAYER_DURATION_SECONDS,
+        delay: float = 0.05,
+    ) -> StartupSnapshot:
+        """
+        Send multiplayer pre-start sequence and return startup snapshot.
+
+        Sequence:
+          1) 49 SS TT
+          2) 4a 00 0a ff DD DD 00 00 00 00 27 10
+          3) 5b XX
+          4) 35 and wait for startup snapshot
+        """
+        await self._write(build_multiplayer_assignment(slot=slot, team=team))
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        await self._write(
+            build_multiplayer_round_config(duration_seconds=duration_seconds)
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        await self._write(build_volume_set(volume))
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        snapshot = await self.query_startup_snapshot(timeout=5.0)
+        return snapshot
+
+    async def arm_multiplayer_round(self) -> None:
+        """Send multiplayer round start/arm command ``58``."""
+        await self._write(build_multiplayer_round_start())
 
     async def set_volume(self, volume: int) -> None:
         """Set gun volume (0 = mute, 31 = max).  Confirmed by Test 4."""
@@ -557,6 +903,42 @@ class LaserOpsDevice:
     async def close_session(self) -> None:
         """Send the session-close command (0x42, low-medium confidence)."""
         await self._write(build_session_close())
+
+    async def request_round_slot_stats(
+        self,
+        slot: int,
+        *,
+        timeout: float = 3.0,
+    ) -> RoundSlotStatsReply:
+        """
+        Request multiplayer round stats for one slot via ``54 SS``.
+
+        Expects response ``54 00 HH KK SS``.
+        """
+        safe_slot = max(0, min(0xFF, int(slot)))
+        payload = await self._write_and_wait(
+            build_round_slot_stats_request(safe_slot),
+            response_prefix=bytes([MSG_ROUND_SLOT_STATS, 0x00]),
+            timeout=timeout,
+        )
+        parsed = decode_round_slot_stats(payload)
+        if parsed is None:
+            raise RuntimeError(f"invalid round slot stats reply: {payload.hex()}")
+        return parsed
+
+    async def collect_round_slot_stats(
+        self,
+        slots: tuple[int, ...],
+        *,
+        per_slot_timeout: float = 3.0,
+    ) -> list[RoundSlotStatsReply]:
+        """Collect multiplayer per-slot round stats for all requested slots."""
+        replies: list[RoundSlotStatsReply] = []
+        for slot in slots:
+            replies.append(
+                await self.request_round_slot_stats(slot, timeout=per_slot_timeout)
+            )
+        return replies
 
 
 class BlasterState:
@@ -758,4 +1140,3 @@ async def scan_for_devices(
             await asyncio.sleep(min(0.2, remaining))
     finally:
         await scanner.stop()
-

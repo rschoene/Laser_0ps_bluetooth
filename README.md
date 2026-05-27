@@ -1,166 +1,170 @@
 # Laser_0ps_bluetooth
 
-Reverse-engineering documentation and Python tooling for the **Hasbro NERF LaserOps** Bluetooth Low Energy (BLE) protocol, derived entirely from Android BLE HCI captures.
+Reverse-engineering and Python/web tooling for **Hasbro NERF LaserOps** over Bluetooth Low Energy (BLE).
 
-## Contributing
+The main goal is safe and repeatable multi-blaster operation through a local server
+(typically a Raspberry Pi as the central host).
 
-Contributions (additional HCI captures, corrections, clarifications) are welcome, especially for Hasbro Nerf LaserOps Pro DeltaBurst devices, to which I do not have access.
-Please open an issue or a pull request.
-If you provide an HCI capture, it would be great if you'd document what you did (number of devices, game mode and setup, estimation or detailed description of statistics and so on).
-Check `test_on_android/test_definition.md` on how to capture HCI protocols on Android.
+## Credits
 
----
-
-## Project Goals
-
-- Document the observed BLE protocol between app and blaster(s).
-- Keep test runs reproducible and comparable across sessions.
-- Provide machine-readable protocol definitions usable in Python.
-- Provide Python scripts to scan, configure, and interact with blasters.
+- **Robert Schone (`rschoene`)**
 
 All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro Android app (see `test_on_android/` for raw logs and analysis).
 
-> **Note:** Confidence levels for protocol fields vary.  
-> Fields marked *confirmed* appear consistently across multiple captures; fields marked *inferred* are consistent with observed traffic but their exact semantics are not yet proven.  
-> Treat inferred fields with caution and verify against new captures before relying on them.
+## Project Goals
 
----
+- Document and validate the BLE protocol in practical usage
+- Manage multiple blasters from a browser UI
+- Start and control rounds with explicit slot/team assignment
+- Run reliably as a long-lived local service (Raspberry Pi target)
 
 ## Repository Layout
 
-```
+```text
 Laser_0ps_bluetooth/
-├── README.md                         ← This file
-├── LICENSE
-├── definition_protocol/
-│   ├── protocol_definition.json      ← Machine-readable protocol model
-│   ├── example_ble_protocol_client.py← BLE scanner/client example using Bleak
-│   └── README.md                     ← Usage instructions for the Python client
-├── protocol/
-│   ├── README.md                     ← ATT transport and message-type reference
-│   └── packets.md                    ← Payload formats with raw observed examples
-├── scripts/
-│   ├── requirements.txt              ← Python dependency (bleak)
-│   ├── laserops.py                   ← Core BLE library (handles, message builders/parsers)
-│   ├── scan.py                       ← Discover nearby LaserOps blasters
-│   ├── assign_device.py              ← Write level / name config to a blaster
-│   ├── start_game.py                 ← Send game-start command sequence
-│   └── collect_stats.py              ← Retrieve end-of-game statistics
-└── test_on_android/
-    ├── test_definition.md            ← Test plan definitions and capture instructions
-    ├── test_1/ … test_7/             ← Per-test notes and filtered HCI logs
-    └── upgrades_powerups.md
+  README.md
+  scripts/                 # BLE core and CLI tooling
+  webapp/                  # FastAPI backend + web UI
+  protocol/                # Human-readable protocol documentation
+  definition_protocol/     # Machine-readable protocol definition
+  test_on_android/         # Capture notes and reverse-engineering evidence
 ```
 
----
+## Web UI Quick Start
 
-## Current Protocol Status
+### Development
 
-The protocol is reverse-engineered and still evolving.
-
-High-confidence items include:
-
-- Transport direction and handles:
-  - host writes typically on `0x0026`
-  - gun notifications typically on `0x0023`
-- Startup exchange (`35` query, `35...` snapshot, initial `5bxx` volume set).
-- Config/state writes (`36...`) and persistent level byte behavior.
-- Gameplay event families (`49`, `52` + `31xx`, `32xx`).
-- End-stat flow (`5a3f...`, `30013f...`, `3e0100`, `42`).
-
-See [`protocol/README.md`](protocol/README.md) for the ATT transport details and a summary of all known message types, [`protocol/packets.md`](protocol/packets.md) for payload formats with raw observed examples, and `test_on_android/test_1/traffic_definition.md` for detailed byte-level notes and confidence annotations.
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.8 or newer
-- A Bluetooth 4.0+ adapter (Linux: BlueZ ≥ 5.43 recommended)
-
-### Install dependencies
+No frontend build step is required.
 
 ```bash
-cd scripts
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r webapp/requirements.txt
+python -m uvicorn webapp.backend.app:app --host 0.0.0.0 --port 8000
 ```
 
-### Scan for blasters
+Open:
+
+`http://<HOST-IP>:8000`
+
+### Raspberry Pi Installation (Recommended)
+
+#### 1) Base packages
 
 ```bash
-python scan.py
+sudo apt update
+sudo apt upgrade -y
+sudo apt install -y python3 python3-venv python3-pip bluetooth bluez
 ```
 
-### Write level / name config to a blaster
+Ensure Bluetooth service is running:
 
 ```bash
-# Level 3, name parts at observed byte values 0x17 and 0x19
-python assign_device.py --address BLASTER_ADDR --level 3 --name-a 23 --name-b 25
+sudo systemctl enable bluetooth
+sudo systemctl start bluetooth
+sudo systemctl status bluetooth
 ```
 
-### Send game-start command sequence
+#### 2) Copy project to the Pi
+
+Recommended path:
+
+`/home/pi/Laser_0ps_bluetooth`
+
+Use either `git clone` or FTP/SFTP upload.
+
+#### 3) Python environment
 
 ```bash
-python start_game.py --address BLASTER_ADDR
+cd /home/pi/Laser_0ps_bluetooth
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r webapp/requirements.txt
 ```
 
-### Collect end-of-game statistics
+#### 4) Manual server test
 
 ```bash
-python collect_stats.py --address BLASTER_ADDR --output results.json
+cd /home/pi/Laser_0ps_bluetooth
+source .venv/bin/activate
+python -m uvicorn webapp.backend.app:app --host 0.0.0.0 --port 8000
 ```
 
-### Run the low-level BLE example client
+Open:
+
+`http://<PI-IP>:8000`
+
+#### 5) Run as systemd service
+
+Create `/etc/systemd/system/laserops-web.service`:
+
+```ini
+[Unit]
+Description=LaserOps Web Control
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/Laser_0ps_bluetooth
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/Laser_0ps_bluetooth/.venv/bin/python -m uvicorn webapp.backend.app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
 
 ```bash
-python definition_protocol/example_ble_protocol_client.py \
-    --address <gun_0_address> \
-    --pair \
-    --send-startup \
-    --startup-volume 0 \
-    --listen-seconds 60
+sudo systemctl daemon-reload
+sudo systemctl enable laserops-web
+sudo systemctl start laserops-web
+sudo systemctl status laserops-web
 ```
 
----
-
-## Data Privacy / Sanitization
-
-This repository has been sanitized for public sharing:
-
-- Real device MAC addresses were replaced with stable fake values in all `filtered_.log` files.
-- Replacement map is documented in `test_on_android/devices.md` (git-ignored).
-- Raw Bluetooth snoop files (`btsnoop_hci.log`) are git-ignored.
-- New captures can be sanitized with `scripts/anonymize_btsnoop.py`, which:
-  - extracts the NerfV device addresses directly from the raw `btsnoop_hci.log`
-  - applies the repo filter `(!bthci_acl) || ((src/dst == nerfv_1) || ... )`
-  - anonymizes the phone, NerfV devices, and any other Bluetooth addresses left in non-ACL frames
-
-Current sanitized mapping labels used in docs and notes:
-
-- `phone_host`
-- `gun_0`
-- `gun_1`
-- `gun_2`
-- `gun_3`
-
-Example:
+Live logs:
 
 ```bash
-python3 scripts/anonymize_btsnoop.py \
-  --input test_on_android/test_8/btsnoop_hci.log \
-  --output test_on_android/test_8/filtered_.log \
-  --force
+journalctl -u laserops-web -f
 ```
 
----
+### Operational Notes
 
-## Limitations
+- Team/slot constraints are currently limited to:
+  - Slots: `2..5`
+  - Teams: `0..2` (`0=Rot`, `1=Blau`, `2=Violett/FFA`)
+- Multiplayer start requires at least **2 connected blasters**
+- Some blaster/firmware profiles still need a **manual reload press** after start to confirm round activation
+- Legacy `/api/stats/{address}` is disabled in safe mode
 
-- Some field meanings are inferred and may change with new captures.
+### Update Workflow
 
----
+```bash
+cd /home/pi/Laser_0ps_bluetooth
+source .venv/bin/activate
+pip install -r webapp/requirements.txt
+sudo systemctl restart laserops-web
+```
+
+## Safety Notice (BLE Reverse Engineering)
+
+All BLE command semantics are based on reverse engineering, not official vendor protocol documentation.
+Safety guards are implemented (command allow-list, strict bounds, write throttling), but absolute guarantees
+for every firmware behavior are technically not possible.
+
+## Documentation
+
+- Web app details: `webapp/README.md`
+- Protocol details: `protocol/README.md` and `protocol/packets.md`
+- Android capture workflow: `test_on_android/test_definition.md`
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
+GNU General Public License v3.0, see [LICENSE](LICENSE).
