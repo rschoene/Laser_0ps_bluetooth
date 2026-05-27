@@ -43,17 +43,40 @@ RECONNECT_SCAN_TIMEOUT = 15.0
 RECONNECT_MAX_ATTEMPTS = 12
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 15.0
+CONNECT_STARTUP_PROBE_TIMEOUT = 5.0
 LOCAL_NAME_MAX_LENGTH = 32
 LOCAL_NAME_STORE_FILENAME = "local_names.json"
 
 
 def _snapshot_to_dict(snapshot: Any) -> dict[str, Any]:
+    raw_hex = snapshot.raw.hex()
     return {
         "level": snapshot.level,
         "name_a": snapshot.name_a,
         "name_b": snapshot.name_b,
-        "raw": snapshot.raw.hex(),
+        "raw": raw_hex,
+        "blaster_type": _detect_blaster_type_from_snapshot_raw(raw_hex),
     }
+
+
+def _detect_blaster_type_from_snapshot_raw(raw_hex: str | None) -> str | None:
+    if not raw_hex:
+        return None
+    try:
+        payload = bytes.fromhex(str(raw_hex))
+    except ValueError:
+        return None
+    if len(payload) != 13 or payload[0] != 0x35:
+        return None
+    # AlphaPoint family seen in tests and live rounds:
+    # 35 00 0a 02 02 [01|03] 00 0a ...
+    if payload[2] == 0x0A and payload[3] == 0x02 and payload[4] == 0x02:
+        return "AlphaPoint"
+    # DeltaBurst family seen in Test 10/11:
+    # 35 00 12 01 02 00 01 0a ...
+    if payload[2] == 0x12 and payload[3] == 0x01 and payload[4] == 0x02:
+        return "DeltaBurst"
+    return "Unknown"
 
 
 @dataclass
@@ -109,6 +132,8 @@ class ConnectionState:
             "startup_level": None,
             "startup_name_a": None,
             "startup_name_b": None,
+            "startup_raw": None,
+            "startup_blaster_type": None,
         }
     )
 
@@ -142,6 +167,10 @@ class ConnectionState:
             state["startup_level"] = payload[8]
             state["startup_name_a"] = payload[9]
             state["startup_name_b"] = payload[10]
+            state["startup_raw"] = payload.hex()
+            state["startup_blaster_type"] = _detect_blaster_type_from_snapshot_raw(
+                payload.hex()
+            )
             return
         if len(payload) == 3 and payload[:1] == b"\x51":
             state["last_status_word"] = (payload[1] << 8) | payload[2]
@@ -299,6 +328,11 @@ class BleHub:
             placeholder.assigned_slot = slot
             placeholder.assigned_team = self._default_team_for_slot(slot)
             self._connections[key] = placeholder
+
+        await self._refresh_startup_snapshot(
+            placeholder,
+            timeout=CONNECT_STARTUP_PROBE_TIMEOUT,
+        )
 
         self._schedule_event(
             "connection",
@@ -769,11 +803,19 @@ class BleHub:
         return [self.connection_summary(conn) for conn in conns]
 
     def connection_summary(self, conn: ConnectionState) -> dict[str, Any]:
+        blaster_type = None
+        if isinstance(conn.last_snapshot, dict):
+            blaster_type = conn.last_snapshot.get("blaster_type")
+        if not blaster_type:
+            startup_type = conn.live_state.get("startup_blaster_type")
+            if startup_type:
+                blaster_type = startup_type
         return {
             "address": conn.address,
             "name": conn.name,
             "local_name": conn.local_name,
             "display_name": self._display_name(conn),
+            "blaster_type": blaster_type or "Unknown",
             "connected_at": conn.connected_at,
             "last_snapshot": conn.last_snapshot,
             "last_game_start_at": conn.last_game_start_at,
@@ -896,6 +938,21 @@ class BleHub:
         if task is not None and not task.done():
             return
         conn.reconnect_task = self._spawn_background(self._reconnect_loop(conn))
+
+    async def _refresh_startup_snapshot(
+        self,
+        conn: ConnectionState,
+        *,
+        timeout: float,
+    ) -> None:
+        if not conn.gun.is_connected:
+            return
+        try:
+            async with conn.op_lock:
+                snapshot = await conn.gun.query_startup_snapshot(timeout=timeout)
+        except Exception:
+            return
+        conn.last_snapshot = _snapshot_to_dict(snapshot)
 
     def _cancel_reconnect_task(self, conn: ConnectionState) -> None:
         task = conn.reconnect_task
@@ -1039,6 +1096,10 @@ class BleHub:
             conn.reconnect_count += 1
             conn.last_error = None
             self._cancel_reconnect_task(conn)
+            await self._refresh_startup_snapshot(
+                conn,
+                timeout=CONNECT_STARTUP_PROBE_TIMEOUT,
+            )
             try:
                 await old_gun.__aexit__(None, None, None)
             except Exception:

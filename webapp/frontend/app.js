@@ -29,6 +29,10 @@ let translations = {
   "error.enterTargetAddress": "Please enter a target address first.",
   "error.noTargetAddressSet": "No target address set.",
   "error.unknown": "Unknown error",
+  "table.blasterType": "Blaster type",
+  "table.unknownType": "Unknown",
+  "blasterType.alphaPoint": "AlphaPoint",
+  "blasterType.deltaBurst": "DeltaBurst",
   "misc.empty": "-",
 };
 
@@ -404,6 +408,34 @@ function displayName(entry) {
   );
 }
 
+function formatBlasterType(value) {
+  const text = String(value || "").trim();
+  if (!text) return t("table.unknownType");
+  const lower = text.toLowerCase();
+  if (lower === "alphapoint") return t("blasterType.alphaPoint");
+  if (lower === "deltaburst") return t("blasterType.deltaBurst");
+  if (lower === "unknown") return t("table.unknownType");
+  return text;
+}
+
+function formatHexByte(value) {
+  if (value == null || Number.isNaN(Number(value))) return t("misc.empty");
+  return `0x${Number(value).toString(16).padStart(2, "0")}`;
+}
+
+function buildBlasterDebugText(entry) {
+  const ls = entry?.live_state || {};
+  const snap = entry?.last_snapshot || {};
+  const type = formatBlasterType(
+    entry?.blaster_type || ls.startup_blaster_type || snap.blaster_type
+  );
+  const level = snap.level ?? ls.startup_level ?? t("misc.empty");
+  const nameA = snap.name_a ?? ls.startup_name_a;
+  const nameB = snap.name_b ?? ls.startup_name_b;
+  const raw = snap.raw || ls.startup_raw || t("misc.empty");
+  return `profile type=${type} level=${level} name=(${formatHexByte(nameA)}, ${formatHexByte(nameB)}) raw=${raw}`;
+}
+
 function formatLinkState(entry) {
   const state = entry.connection_state || t("misc.empty");
   const reconnect = entry.reconnect_count ?? 0;
@@ -434,6 +466,12 @@ function upsertLiveEntry(entry) {
   if (entry.live_state == null && current.live_state != null) {
     merged.live_state = current.live_state;
   }
+  if (entry.last_snapshot == null && current.last_snapshot != null) {
+    merged.last_snapshot = current.last_snapshot;
+  }
+  if (entry.blaster_type == null && current.blaster_type != null) {
+    merged.blaster_type = current.blaster_type;
+  }
   merged.display_name = merged.display_name || merged.local_name || merged.name || merged.address;
   liveByAddress.set(key, merged);
 }
@@ -461,10 +499,14 @@ function renderLiveStatus() {
       ls.last_status_word == null
         ? t("misc.empty")
         : `0x${Number(ls.last_status_word).toString(16).padStart(4, "0")}`;
+    const blasterType = formatBlasterType(
+      item.blaster_type || ls.startup_blaster_type || item.last_snapshot?.blaster_type
+    );
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(displayName(item))}</td>
+      <td>${escapeHtml(blasterType)}</td>
       <td>${escapeHtml(item.address || t("misc.empty"))}</td>
       <td>${escapeHtml(formatTeam(item.assigned_slot, item.assigned_team))}</td>
       <td>${escapeHtml(formatLinkState(item))}</td>
@@ -505,10 +547,14 @@ function renderSetupTable(connections) {
       conn.assigned_slot == null ? SLOT_MIN : Number(conn.assigned_slot);
     const teamValue = conn.assigned_team == null ? 2 : Number(conn.assigned_team);
     const localNameValue = conn.local_name || "";
+    const blasterType = formatBlasterType(
+      conn.blaster_type || conn.live_state?.startup_blaster_type || conn.last_snapshot?.blaster_type
+    );
 
     tr.innerHTML = `
       <td><input class="setup-name-input" type="text" maxlength="32" value="${escapeHtml(localNameValue)}" placeholder="${escapeHtml(t("placeholder.localName"))}"></td>
       <td>${escapeHtml(conn.name || t("state.unknown"))}</td>
+      <td>${escapeHtml(blasterType)}</td>
       <td>${escapeHtml(safeAddress)}</td>
       <td><input class="setup-slot-input" type="number" min="${SLOT_MIN}" max="${SLOT_MAX}" value="${slotValue}"></td>
       <td>
@@ -686,6 +732,8 @@ function applyConnectionList(connections) {
       disconnect_count: conn.disconnect_count,
       last_error: conn.last_error,
       connected_at: conn.connected_at,
+      blaster_type: conn.blaster_type,
+      last_snapshot: conn.last_snapshot,
     });
   }
   for (const key of Array.from(liveByAddress.keys())) {
@@ -710,9 +758,13 @@ function renderConnections(connections) {
     (a.address || "").localeCompare(b.address || "")
   );
   for (const conn of sorted) {
+    const blasterType = formatBlasterType(
+      conn.blaster_type || conn.live_state?.startup_blaster_type || conn.last_snapshot?.blaster_type
+    );
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(conn.display_name || conn.local_name || conn.name || t("state.unknown"))}</td>
+      <td>${escapeHtml(blasterType)}</td>
       <td>${escapeHtml(conn.address)}</td>
       <td>${escapeHtml(formatTeam(conn.assigned_slot, conn.assigned_team))}</td>
       <td>${escapeHtml(formatLinkState(conn))}</td>
@@ -765,9 +817,14 @@ function handleConnectionEvent(payload, ts) {
       disconnect_count: conn.disconnect_count,
       last_error: conn.last_error,
       connected_at: conn.connected_at,
+      blaster_type: conn.blaster_type,
+      last_snapshot: conn.last_snapshot,
     });
     pushLiveLine(
       `${ts} ${t("live.connected", { address: conn.address || t("misc.empty") })}`
+    );
+    pushLiveLine(
+      `${ts} [${conn.address || t("misc.empty")}] ${buildBlasterDebugText(conn)}`
     );
     refreshConnections().catch((err) => {
       reportError(err, { contextKey: "context.liveConnection", dedupeMs: 10000 });
@@ -831,6 +888,10 @@ function handleConnectionEvent(payload, ts) {
       action: payload.action || t("state.connectionActionFallback"),
     })}`
   );
+  const debugEntry = liveByAddress.get(normAddress(payload.address));
+  if (debugEntry) {
+    pushLiveLine(`${ts} [${payload.address}] ${buildBlasterDebugText(debugEntry)}`);
+  }
   renderLiveStatus();
 }
 
@@ -897,6 +958,8 @@ function handleLiveEvent(eventEnvelope) {
       disconnect_count: conn.disconnect_count,
       last_error: conn.last_error,
       connected_at: conn.connected_at,
+      blaster_type: conn.blaster_type,
+      last_snapshot: conn.last_snapshot,
     });
     renderLiveStatus();
     refreshConnections().catch((err) => {
@@ -916,6 +979,8 @@ function handleLiveEvent(eventEnvelope) {
       local_name: payload.local_name ?? existing.local_name ?? null,
       display_name: payload.display_name ?? existing.display_name ?? null,
       live_state: payload.live_state || existing.live_state || {},
+      blaster_type: payload.blaster_type ?? existing.blaster_type ?? null,
+      last_snapshot: payload.last_snapshot ?? existing.last_snapshot ?? null,
       assigned_slot: payload.slot ?? existing.assigned_slot ?? null,
       assigned_team: payload.team ?? existing.assigned_team ?? null,
     });
