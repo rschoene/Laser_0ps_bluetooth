@@ -8,6 +8,7 @@ The main goal is safe and repeatable multi-blaster operation through a local ser
 ## Credits
 
 - **Robert Schone (`rschoene`)**
+- **Patrick Kalka (`PatrickKalka-SeriousByte`)**
 
 All protocol knowledge comes from BLE HCI snoop captures of the official Hasbro Android app (see `test_on_android/` for raw logs and analysis).
 
