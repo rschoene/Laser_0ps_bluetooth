@@ -47,6 +47,7 @@ CONNECT_STARTUP_PROBE_TIMEOUT = 5.0
 LOCAL_NAME_MAX_LENGTH = 32
 LOCAL_NAME_STORE_FILENAME = "local_names.json"
 DEBUG_EVENT_LOG_FILENAME = "live_event_log.ndjson"
+ROUND_SLOT_STATS_ERROR_DETAIL_LIMIT = 8
 # Some firmware revisions emit back-to-back duplicate trigger/reload notifications
 # for one physical action. Keep a tiny dedupe window so live shot/reload counters
 # match real actions while preserving raw event visibility.
@@ -1534,48 +1535,89 @@ class BleHub:
         if not connected:
             return {}, None, "no connected device available for round slot stats"
 
-        slot_totals: dict[int, dict[str, int]] = {
-            int(slot): {"hits": 0, "kills": 0} for slot in slots
+        slot_values: dict[int, list[tuple[str, int, int]]] = {
+            int(slot): [] for slot in slots
         }
-        slot_reply_counts: dict[int, int] = {int(slot): 0 for slot in slots}
         source_errors: list[str] = []
+        source_error_overflow = 0
+        request_error_count = 0
+        invalid_reply_count = 0
+        slot_mismatch_count = 0
+        unexpected_slot_count = 0
         used_sources: list[str] = []
+
+        def _add_source_error(detail: str) -> None:
+            nonlocal source_error_overflow
+            if len(source_errors) < ROUND_SLOT_STATS_ERROR_DETAIL_LIMIT:
+                source_errors.append(detail)
+            else:
+                source_error_overflow += 1
 
         for conn in connected:
             source_used = False
             async with conn.op_lock:
                 for slot in slots:
+                    requested_slot = int(slot)
                     try:
                         reply = await conn.gun.request_round_slot_stats(
-                            slot=int(slot),
+                            slot=requested_slot,
                             timeout=2.5,
                         )
                     except Exception as exc:
-                        source_errors.append(f"{conn.address}/slot{int(slot)}: {exc}")
-                        continue
-                    if not isinstance(reply, RoundSlotStatsReply):
-                        source_errors.append(
-                            f"{conn.address}/slot{int(slot)}: invalid round slot stats reply"
+                        request_error_count += 1
+                        _add_source_error(
+                            f"{conn.address}/slot{requested_slot}: {exc}"
                         )
                         continue
-                    slot_key = int(slot)
-                    slot_totals[slot_key]["hits"] += int(reply.hits)
-                    slot_totals[slot_key]["kills"] += int(reply.kills)
-                    slot_reply_counts[slot_key] += 1
+                    if not isinstance(reply, RoundSlotStatsReply):
+                        invalid_reply_count += 1
+                        _add_source_error(
+                            f"{conn.address}/slot{requested_slot}: invalid round slot stats reply"
+                        )
+                        continue
+                    slot_key = int(reply.slot)
+                    if slot_key != requested_slot:
+                        slot_mismatch_count += 1
+                        _add_source_error(
+                            f"{conn.address}/slot{requested_slot}: slot mismatch reply={slot_key}"
+                        )
+                        continue
+                    if slot_key not in slot_values:
+                        unexpected_slot_count += 1
+                        _add_source_error(
+                            f"{conn.address}/slot{requested_slot}: unexpected slot {slot_key}"
+                        )
+                        continue
+                    slot_values[slot_key].append(
+                        (conn.address, int(reply.hits), int(reply.kills))
+                    )
                     source_used = True
             if source_used:
                 used_sources.append(conn.address)
 
         merged_stats: dict[int, dict[str, int]] = {}
         missing_slots: list[int] = []
+        inconsistent_slots: list[str] = []
         for slot in slots:
             slot_key = int(slot)
-            if int(slot_reply_counts.get(slot_key, 0)) <= 0:
+            values = list(slot_values.get(slot_key, []))
+            if not values:
                 missing_slots.append(slot_key)
                 continue
+            # 54 replies are per-slot totals; multiple blasters typically report
+            # the same numbers. Never sum across sources.
+            pairs = [(hits, kills) for _addr, hits, kills in values]
+            unique_pairs = sorted(set(pairs))
+            if len(unique_pairs) > 1:
+                inconsistent_slots.append(
+                    f"{slot_key}:"
+                    + ",".join(f"{h}/{k}" for h, k in unique_pairs)
+                )
+            # Prefer the most complete observed pair (max hits, then max kills).
+            best_hits, best_kills = max(unique_pairs, key=lambda hk: (hk[0], hk[1]))
             merged_stats[slot_key] = {
-                "hits": int(slot_totals[slot_key]["hits"]),
-                "kills": int(slot_totals[slot_key]["kills"]),
+                "hits": int(best_hits),
+                "kills": int(best_kills),
             }
 
         if not merged_stats:
@@ -1587,8 +1629,31 @@ class BleHub:
         stats_error: str | None = None
         if missing_slots:
             stats_error = "missing slots: " + ", ".join(str(slot) for slot in missing_slots)
+        if inconsistent_slots:
+            inconsistency = "inconsistent slot stats: " + "; ".join(inconsistent_slots)
+            if stats_error:
+                stats_error = f"{stats_error} | {inconsistency}"
+            else:
+                stats_error = inconsistency
+        anomaly_counts: list[str] = []
+        if slot_mismatch_count > 0:
+            anomaly_counts.append(f"slot_mismatch={slot_mismatch_count}")
+        if invalid_reply_count > 0:
+            anomaly_counts.append(f"invalid_reply={invalid_reply_count}")
+        if unexpected_slot_count > 0:
+            anomaly_counts.append(f"unexpected_slot={unexpected_slot_count}")
+        if request_error_count > 0:
+            anomaly_counts.append(f"request_error={request_error_count}")
+        if anomaly_counts:
+            anomaly_summary = "round slot stats anomalies: " + ", ".join(anomaly_counts)
+            if stats_error:
+                stats_error = f"{stats_error} | {anomaly_summary}"
+            else:
+                stats_error = anomaly_summary
         if source_errors:
             extra = "; ".join(source_errors)
+            if source_error_overflow > 0:
+                extra = f"{extra}; +{source_error_overflow} more"
             if stats_error:
                 stats_error = f"{stats_error} | {extra}"
             else:

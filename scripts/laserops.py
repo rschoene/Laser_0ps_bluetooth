@@ -909,6 +909,7 @@ class LaserOpsDevice:
         slot: int,
         *,
         timeout: float = 3.0,
+        max_attempts: int = 4,
     ) -> RoundSlotStatsReply:
         """
         Request multiplayer round stats for one slot via ``54 SS``.
@@ -916,15 +917,38 @@ class LaserOpsDevice:
         Expects response ``54 00 HH KK SS``.
         """
         safe_slot = max(0, min(0xFF, int(slot)))
-        payload = await self._write_and_wait(
-            build_round_slot_stats_request(safe_slot),
-            response_prefix=bytes([MSG_ROUND_SLOT_STATS, 0x00]),
-            timeout=timeout,
-        )
-        parsed = decode_round_slot_stats(payload)
-        if parsed is None:
-            raise RuntimeError(f"invalid round slot stats reply: {payload.hex()}")
-        return parsed
+        attempts = max(1, int(max_attempts))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.1, float(timeout))
+        last_error: str | None = None
+
+        for _ in range(attempts):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            payload = await self._write_and_wait(
+                build_round_slot_stats_request(safe_slot),
+                response_prefix=bytes([MSG_ROUND_SLOT_STATS, 0x00]),
+                timeout=remaining,
+            )
+            parsed = decode_round_slot_stats(payload)
+            if parsed is None:
+                last_error = f"invalid round slot stats reply: {payload.hex()}"
+                continue
+            if int(parsed.slot) != safe_slot:
+                last_error = (
+                    f"round slot stats mismatch: requested={safe_slot} "
+                    f"received={int(parsed.slot)} raw={payload.hex()}"
+                )
+                continue
+            return parsed
+
+        if last_error is None:
+            raise RuntimeError(
+                f"round slot stats timeout for slot {safe_slot} "
+                f"after {attempts} attempts"
+            )
+        raise RuntimeError(last_error)
 
     async def collect_round_slot_stats(
         self,
