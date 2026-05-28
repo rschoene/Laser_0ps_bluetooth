@@ -47,6 +47,10 @@ CONNECT_STARTUP_PROBE_TIMEOUT = 5.0
 LOCAL_NAME_MAX_LENGTH = 32
 LOCAL_NAME_STORE_FILENAME = "local_names.json"
 DEBUG_EVENT_LOG_FILENAME = "live_event_log.ndjson"
+# Some firmware revisions emit back-to-back duplicate trigger/reload notifications
+# for one physical action. Keep a tiny dedupe window so live shot/reload counters
+# match real actions while preserving raw event visibility.
+TRIGGER_RELOAD_DEDUP_WINDOW_SECONDS = 0.05
 
 
 def _snapshot_to_dict(snapshot: Any) -> dict[str, Any]:
@@ -249,6 +253,8 @@ class ConnectionState:
     last_error: str | None = None
     reconnect_task: asyncio.Task | None = None
     reconnect_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_counted_trigger_ts: float | None = None
+    last_counted_reload_ts: float | None = None
     live_state: dict[str, Any] = field(
         default_factory=lambda: {
             "last_event": None,
@@ -256,6 +262,8 @@ class ConnectionState:
             "last_raw": None,
             "trigger_count": 0,
             "reload_count": 0,
+            "trigger_raw_count": 0,
+            "reload_raw_count": 0,
             "stats_terminal_count": 0,
             "last_status_word": None,
             "last_ammo_family": None,
@@ -297,9 +305,19 @@ class ConnectionState:
         state["last_raw"] = payload.hex()
 
         if payload == b"\x49":
+            state["trigger_raw_count"] = int(state.get("trigger_raw_count", 0) or 0) + 1
+            if self.last_counted_trigger_ts is not None:
+                if (ts - self.last_counted_trigger_ts) <= TRIGGER_RELOAD_DEDUP_WINDOW_SECONDS:
+                    return
+            self.last_counted_trigger_ts = ts
             state["trigger_count"] += 1
             return
         if payload == b"\x52":
+            state["reload_raw_count"] = int(state.get("reload_raw_count", 0) or 0) + 1
+            if self.last_counted_reload_ts is not None:
+                if (ts - self.last_counted_reload_ts) <= TRIGGER_RELOAD_DEDUP_WINDOW_SECONDS:
+                    return
+            self.last_counted_reload_ts = ts
             state["reload_count"] += 1
             return
         if payload in (bytes.fromhex("310a"), bytes.fromhex("310d")):
