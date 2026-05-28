@@ -264,7 +264,7 @@ def decode_notification(payload: bytes) -> str:
     if h == "52":
         return "reload_marker_a"
 
-    if h in ("310a", "310d"):
+    if len(payload) == 2 and payload[0] == 0x31:
         return f"reload_marker_b variant=0x{payload[1]:02x} raw={h}"
 
     if payload[0:1] == b"\x32" and len(payload) >= 2:

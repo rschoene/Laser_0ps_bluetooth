@@ -344,6 +344,45 @@
         "In current captures, the last two bytes map by mode: 2710 is seen in multiplayer variants, while 1388 is seen in single-player variants."
       ]
     },
+    "game_mode_flag": {
+      "id_hex_prefix": "44",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "payload_pattern": "44 MM",
+      "fields": [
+        {
+          "name": "mode_flag",
+          "index": 1,
+          "symbol": "MM",
+          "meaning": "mode selector byte (observed values include 00 and 01)",
+          "confidence": "medium"
+        }
+      ],
+      "notes": [
+        "Seen before setup/start command clusters in single-player and multiplayer captures.",
+        "44 01 is common in single-player captures; 44 00 appears in multiplayer setup captures (for example Test 8)."
+      ]
+    },
+    "game_setup_param_41": {
+      "id_hex_prefix": "41",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "payload_pattern": "41 .. ..",
+      "notes": [
+        "Observed as setup parameter traffic (for example 41 13 88) before gameplay.",
+        "Exact field semantics still inferred."
+      ]
+    },
+    "game_setup_param_3b": {
+      "id_hex_prefix": "3b",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "payload_pattern": "3b VV",
+      "notes": [
+        "Observed as setup/control parameter traffic with varying VV values (for example 00, 05, 07, 08, 0a, 0c).",
+        "Exact semantics are still inferred and likely mode-dependent."
+      ]
+    },
     "round_start": {
       "id_hex": "58",
       "direction": "host_to_gun",
@@ -370,6 +409,14 @@
         "End-of-round aggregate counter.",
         "Strongly supported by Test 9: 001e = 30 shots, 000a = 10 shots, matching handwritten notes exactly.",
         "Also present in Test 8 during the same multiplayer round-close exchange."
+      ]
+    },
+    "round_shot_counter_request": {
+      "id_hex": "47",
+      "direction": "host_to_gun",
+      "handle": "0x0026",
+      "notes": [
+        "Observed as host request during some round-finalization flows (for example Test 12), followed by a 47 HH LL reply."
       ]
     },
     "round_slot_stats": {

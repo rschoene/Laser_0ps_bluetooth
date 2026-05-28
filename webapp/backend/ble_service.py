@@ -114,8 +114,10 @@ def _decode_tx_packet(payload: bytes) -> str:
         return "session_close"
     if len(payload) == 4 and payload[0] == 0x37:
         return f"game_ctrl raw={payload.hex()}"
-    if payload in (b"\x44\x01",):
-        return f"game_mode_flag raw={payload.hex()}"
+    if len(payload) == 2 and payload[0] == 0x44:
+        return f"game_mode_flag mode={payload[1]} raw={payload.hex()}"
+    if payload == b"\x47":
+        return "round_shot_counter_request"
     if payload[:1] in (b"\x41", b"\x3B", b"\x39"):
         return f"game_setup_param raw={payload.hex()}"
     return f"tx_unknown raw={payload.hex()}"
@@ -156,6 +158,10 @@ def _derive_packet_fields(payload: bytes, *, direction: str) -> dict[str, Any]:
             out.update({"slot": int(payload[1])})
         elif msg_id == 0x5A and len(payload) == 6 and payload[:3] == bytes([0x5A, 0x3F, 0x01]):
             out.update({"stat_type": int(payload[3])})
+        elif msg_id == 0x44 and len(payload) == 2:
+            out.update({"mode_flag": int(payload[1])})
+        elif msg_id == 0x47 and len(payload) == 1:
+            out.update({"round_shot_counter_request": True})
         return out
 
     # RX (notification) derived values
