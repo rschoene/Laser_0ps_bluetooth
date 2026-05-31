@@ -277,7 +277,11 @@ def decode_notification(payload: bytes) -> str:
     if h == "3f":
         return "respawn_ready_marker raw=3f (inferred)"
 
-    if len(payload) == 5 and payload[0] == 0x30 and payload[3] == 0x02:
+    if (
+        len(payload) == 5
+        and payload[0] == 0x30
+        and payload[:3] != bytes([0x30, 0x01, 0x3F])
+    ):
         return (
             f"life_state_update mode_a=0x{payload[1]:02x} mode_b=0x{payload[2]:02x} "
             f"family=0x{payload[3]:02x} "
@@ -326,7 +330,25 @@ def clamp_name_b_id(value: int) -> int:
     return max(NAME_B_ID_MIN, min(NAME_B_ID_MAX, value))
 
 
-def build_config_write(level: int, name_a: int, name_b: int) -> bytes:
+def clamp_u8(value: int) -> int:
+    """Clamp arbitrary integer to an unsigned byte."""
+    return max(0x00, min(0xFF, int(value)))
+
+
+def build_config_write(
+    level: int,
+    name_a: int,
+    name_b: int,
+    *,
+    ammo_profile: int = 0x0A,
+    damage_profile: int = 0x02,
+    profile_byte4: int = 0x02,
+    profile_byte5: int = 0x03,
+    byte7_selector: int = 0x00,
+    health_profile: int = 0x0A,
+    reserved_byte11: int = 0x00,
+    tail_profile: int = 0x04,
+) -> bytes:
     """
     Build a 13-byte config write payload (form A, host → gun).
 
@@ -335,15 +357,24 @@ def build_config_write(level: int, name_a: int, name_b: int) -> bytes:
     of the payload.  Based on captures, these appear to be (app_name_index + 1)
     for each of the two name words, but this relationship is inferred.
 
-    Returns form A: 36 00 0a 02 02 03 00 0a LL NN MM 00 04
+    Profile bytes can be overridden for different blaster families.
     """
     safe_name_a = clamp_name_a_id(name_a)
     safe_name_b = clamp_name_b_id(name_b)
     return bytes([
-        MSG_CONFIG_WRITE, 0x00, 0x0A, 0x02, 0x02,
-        0x03, 0x00, 0x0A,
-        level & 0xFF, safe_name_a & 0xFF, safe_name_b & 0xFF,
-        0x00, 0x04,
+        MSG_CONFIG_WRITE,
+        0x00,
+        clamp_u8(ammo_profile),
+        clamp_u8(damage_profile),
+        clamp_u8(profile_byte4),
+        clamp_u8(profile_byte5),
+        clamp_u8(byte7_selector),
+        clamp_u8(health_profile),
+        level & 0xFF,
+        safe_name_a & 0xFF,
+        safe_name_b & 0xFF,
+        clamp_u8(reserved_byte11),
+        clamp_u8(tail_profile),
     ])
 
 
@@ -743,17 +774,43 @@ class LaserOpsDevice:
         return snapshot
 
     async def write_config(
-        self, level: int, name_a: int, name_b: int
+        self,
+        level: int,
+        name_a: int,
+        name_b: int,
+        *,
+        ammo_profile: int = 0x0A,
+        damage_profile: int = 0x02,
+        profile_byte4: int = 0x02,
+        profile_byte5: int = 0x03,
+        byte7_selector: int = 0x00,
+        health_profile: int = 0x0A,
+        reserved_byte11: int = 0x00,
+        tail_profile: int = 0x04,
     ) -> None:
         """
-        Write level and name configuration to the gun (form A config write + apply).
+        Write configuration to the gun (0x36 config write + 0x57 apply).
 
         ``name_a`` and ``name_b`` are the raw byte values to embed in the
         config-write payload (bytes 9 and 10).  Based on capture evidence,
         these appear to equal (app_name_index + 1) for each selected name
         word, but this relationship is inferred.
         """
-        await self._write(build_config_write(level, name_a, name_b))
+        await self._write(
+            build_config_write(
+                level,
+                name_a,
+                name_b,
+                ammo_profile=ammo_profile,
+                damage_profile=damage_profile,
+                profile_byte4=profile_byte4,
+                profile_byte5=profile_byte5,
+                byte7_selector=byte7_selector,
+                health_profile=health_profile,
+                reserved_byte11=reserved_byte11,
+                tail_profile=tail_profile,
+            )
+        )
         await self._write(build_apply_commit())
 
     async def send_game_setup(

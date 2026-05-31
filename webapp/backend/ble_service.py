@@ -24,6 +24,8 @@ SAFE_LEVEL_MIN = 1
 SAFE_LEVEL_MAX = 5
 SAFE_NAME_INDEX_MIN = 0
 SAFE_NAME_INDEX_MAX = 49
+SAFE_PROFILE_BYTE_MIN = 0x00
+SAFE_PROFILE_BYTE_MAX = 0xFF
 SAFE_SLOT_MIN = 2
 SAFE_SLOT_MAX = 5
 SAFE_TEAM_MIN = 0
@@ -54,6 +56,29 @@ ROUND_SLOT_STATS_ERROR_DETAIL_LIMIT = 8
 TRIGGER_RELOAD_DEDUP_WINDOW_SECONDS = 0.05
 
 
+DEFAULT_ALPHA_CONFIG_TEMPLATE: dict[str, int] = {
+    "ammo_profile": 0x0A,
+    "damage_profile": 0x02,
+    "profile_byte4": 0x02,
+    "profile_byte5": 0x03,
+    "byte7_selector": 0x00,
+    "health_profile": 0x0A,
+    "reserved_byte11": 0x00,
+    "tail_profile": 0x04,
+}
+
+DEFAULT_DELTA_CONFIG_TEMPLATE: dict[str, int] = {
+    "ammo_profile": 0x12,
+    "damage_profile": 0x01,
+    "profile_byte4": 0x02,
+    "profile_byte5": 0x00,
+    "byte7_selector": 0x01,
+    "health_profile": 0x0A,
+    "reserved_byte11": 0x00,
+    "tail_profile": 0x04,
+}
+
+
 def _snapshot_to_dict(snapshot: Any) -> dict[str, Any]:
     raw_hex = snapshot.raw.hex()
     return {
@@ -74,15 +99,63 @@ def _detect_blaster_type_from_snapshot_raw(raw_hex: str | None) -> str | None:
         return None
     if len(payload) != 13 or payload[0] != 0x35:
         return None
-    # AlphaPoint family seen in tests and live rounds:
-    # 35 00 0a 02 02 [01|03] 00 0a ...
+    # Prefer selector byte (1-based byte 7), which stays stable when
+    # ammo/damage/health profile bytes are customized via 0x36.
+    if payload[6] == 0x00:
+        return "AlphaPoint"
+    if payload[6] == 0x01:
+        return "DeltaBurst"
+    # Fallback to historical signatures.
     if payload[2] == 0x0A and payload[3] == 0x02 and payload[4] == 0x02:
         return "AlphaPoint"
-    # DeltaBurst family seen in Test 10/11:
-    # 35 00 12 01 02 00 01 0a ...
     if payload[2] == 0x12 and payload[3] == 0x01 and payload[4] == 0x02:
         return "DeltaBurst"
     return "Unknown"
+
+
+def _extract_config_write_profile(payload: bytes) -> dict[str, Any] | None:
+    if len(payload) != 13 or payload[0] != 0x36:
+        return None
+    byte7_selector = int(payload[6])  # 1-based byte 7
+    if byte7_selector == 0x00:
+        family_hint = "AlphaPoint_candidate"
+    elif byte7_selector == 0x01:
+        family_hint = "DeltaBurst_candidate"
+    else:
+        family_hint = "Unknown"
+    return {
+        "template_prefix": payload[1:8].hex(),
+        "byte7_selector": byte7_selector,
+        "family_hint": family_hint,
+        "ammo_profile": int(payload[2]),
+        "damage_profile": int(payload[3]),
+        "health_profile": int(payload[7]),
+        "level": int(payload[8]),
+        "name_a": int(payload[9]),
+        "name_b": int(payload[10]),
+        "tail_profile": int(payload[12]),
+    }
+
+
+def _extract_config_template_from_startup_payload(payload: bytes) -> dict[str, int] | None:
+    if len(payload) != 13 or payload[0] != 0x35:
+        return None
+    return {
+        "ammo_profile": int(payload[2]),
+        "damage_profile": int(payload[3]),
+        "profile_byte4": int(payload[4]),
+        "profile_byte5": int(payload[5]),
+        "byte7_selector": int(payload[6]),
+        "health_profile": int(payload[7]),
+        "reserved_byte11": int(payload[11]),
+        "tail_profile": int(payload[12]),
+    }
+
+
+def _default_template_for_blaster_type(blaster_type: str | None) -> dict[str, int]:
+    if blaster_type == "DeltaBurst":
+        return dict(DEFAULT_DELTA_CONFIG_TEMPLATE)
+    return dict(DEFAULT_ALPHA_CONFIG_TEMPLATE)
 
 
 def _decode_tx_packet(payload: bytes) -> str:
@@ -91,9 +164,18 @@ def _decode_tx_packet(payload: bytes) -> str:
     if payload == b"\x35":
         return "startup_query"
     if len(payload) == 13 and payload[0] == 0x36:
+        cfg = _extract_config_write_profile(payload)
+        if cfg is None:
+            return f"config_write raw={payload.hex()}"
         return (
-            f"config_write level={payload[8]} "
-            f"name_parts=(0x{payload[9]:02x}, 0x{payload[10]:02x}) raw={payload.hex()}"
+            f"config_write level={cfg['level']} "
+            f"name_parts=(0x{cfg['name_a']:02x}, 0x{cfg['name_b']:02x}) "
+            f"family_hint={cfg['family_hint']} "
+            f"byte7=0x{cfg['byte7_selector']:02x} "
+            f"profile=(ammo=0x{cfg['ammo_profile']:02x}, "
+            f"damage=0x{cfg['damage_profile']:02x}, "
+            f"health=0x{cfg['health_profile']:02x}, "
+            f"tail=0x{cfg['tail_profile']:02x}) raw={payload.hex()}"
         )
     if payload == b"\x57":
         return "config_apply_commit"
@@ -139,15 +221,10 @@ def _derive_packet_fields(payload: bytes, *, direction: str) -> dict[str, Any]:
     }
     if direction == "tx":
         if msg_id == 0x36 and len(payload) == 13:
-            out.update(
-                {
-                    "template_prefix": payload[1:8].hex(),
-                    "level": int(payload[8]),
-                    "name_a": int(payload[9]),
-                    "name_b": int(payload[10]),
-                    "tail_marker": f"0x{payload[12]:02x}",
-                }
-            )
+            cfg = _extract_config_write_profile(payload)
+            if cfg is not None:
+                out.update(cfg)
+                out["tail_marker"] = f"0x{int(cfg['tail_profile']):02x}"
         elif msg_id == 0x49 and len(payload) == 3:
             out.update({"slot": int(payload[1]), "team": int(payload[2])})
         elif msg_id == 0x4A and len(payload) == 12:
@@ -165,6 +242,15 @@ def _derive_packet_fields(payload: bytes, *, direction: str) -> dict[str, Any]:
             out.update({"stat_type": int(payload[3])})
         elif msg_id == 0x44 and len(payload) == 2:
             out.update({"mode_flag": int(payload[1])})
+        elif msg_id == 0x37 and len(payload) == 4:
+            control = int(payload[1])
+            out.update(
+                {
+                    "game_ctrl_control": control,
+                    "game_ctrl_control_hex": f"0x{control:02x}",
+                    "game_ctrl_tail": payload[2:4].hex(),
+                }
+            )
         elif msg_id == 0x47 and len(payload) == 1:
             out.update({"round_shot_counter_request": True})
         return out
@@ -187,7 +273,7 @@ def _derive_packet_fields(payload: bytes, *, direction: str) -> dict[str, Any]:
     elif (
         msg_id == 0x30
         and len(payload) == 5
-        and int(payload[3]) == 0x02
+        and payload[:3] != bytes([0x30, 0x01, 0x3F])
     ):
         out.update(
             {
@@ -340,7 +426,11 @@ class ConnectionState:
             state["last_ammo_family"] = payload[1]
             state["last_ammo_counter"] = payload[-1]
             return
-        if len(payload) == 5 and payload[0] == 0x30 and payload[3] == 0x02:
+        if (
+            len(payload) == 5
+            and payload[0] == 0x30
+            and payload[:3] != bytes([0x30, 0x01, 0x3F])
+        ):
             state["last_life_mode_a"] = payload[1]
             state["last_life_mode_b"] = payload[2]
             state["last_life_family"] = payload[3]
@@ -595,12 +685,34 @@ class BleHub:
                 )
 
     async def write_config(
-        self, address: str, level: int, name_a: int, name_b: int
+        self,
+        address: str,
+        level: int,
+        name_a: int,
+        name_b: int,
+        *,
+        ammo_profile: int | None = None,
+        damage_profile: int | None = None,
+        health_profile: int | None = None,
     ) -> None:
-        self._validate_safe_config(level=level, name_a=name_a, name_b=name_b)
+        self._validate_safe_config(
+            level=level,
+            name_a=name_a,
+            name_b=name_b,
+            ammo_profile=ammo_profile,
+            damage_profile=damage_profile,
+            health_profile=health_profile,
+        )
         async with self._bulk_game_start_lock:
             conn = await self._get(address)
             await self._ensure_connected(conn)
+            template = self._resolve_config_template_for_connection(conn)
+            if ammo_profile is not None:
+                template["ammo_profile"] = int(ammo_profile)
+            if damage_profile is not None:
+                template["damage_profile"] = int(damage_profile)
+            if health_profile is not None:
+                template["health_profile"] = int(health_profile)
             # Mirror assign_device.py behavior: UI/API provide 0-based indices,
             # payload uses (index + 1) bytes.
             name_a_byte = name_a + 1
@@ -610,6 +722,14 @@ class BleHub:
                     level=level,
                     name_a=name_a_byte,
                     name_b=name_b_byte,
+                    ammo_profile=template["ammo_profile"],
+                    damage_profile=template["damage_profile"],
+                    profile_byte4=template["profile_byte4"],
+                    profile_byte5=template["profile_byte5"],
+                    byte7_selector=template["byte7_selector"],
+                    health_profile=template["health_profile"],
+                    reserved_byte11=template["reserved_byte11"],
+                    tail_profile=template["tail_profile"],
                 )
                 self._schedule_event(
                     "config",
@@ -619,8 +739,48 @@ class BleHub:
                         "level": level,
                         "name_a": name_a,
                         "name_b": name_b,
+                        "ammo_profile": template["ammo_profile"],
+                        "damage_profile": template["damage_profile"],
+                        "health_profile": template["health_profile"],
+                        "template_byte7_selector": template["byte7_selector"],
                     },
                 )
+
+    def _resolve_config_template_for_connection(
+        self, conn: ConnectionState
+    ) -> dict[str, int]:
+        snapshot_raw = None
+        if isinstance(conn.last_snapshot, dict):
+            snapshot_raw = conn.last_snapshot.get("raw")
+        if isinstance(snapshot_raw, str):
+            try:
+                payload = bytes.fromhex(snapshot_raw)
+                template = _extract_config_template_from_startup_payload(payload)
+                if template is not None:
+                    return template
+            except ValueError:
+                pass
+
+        live_raw = conn.live_state.get("startup_raw")
+        if isinstance(live_raw, str):
+            try:
+                payload = bytes.fromhex(live_raw)
+                template = _extract_config_template_from_startup_payload(payload)
+                if template is not None:
+                    return template
+            except ValueError:
+                pass
+
+        blaster_type = None
+        if isinstance(conn.last_snapshot, dict):
+            snapshot_type = conn.last_snapshot.get("blaster_type")
+            if isinstance(snapshot_type, str) and snapshot_type:
+                blaster_type = snapshot_type
+        if blaster_type is None:
+            startup_type = conn.live_state.get("startup_blaster_type")
+            if isinstance(startup_type, str) and startup_type:
+                blaster_type = startup_type
+        return _default_template_for_blaster_type(blaster_type)
 
     async def set_team_profile(self, address: str, slot: int, team: int) -> dict[str, Any]:
         safe_slot, safe_team = self._validate_safe_team(slot=slot, team=team)
@@ -1910,7 +2070,16 @@ class BleHub:
                 pass
             raise RuntimeError(f"failed to persist local names: {exc}") from exc
 
-    def _validate_safe_config(self, level: int, name_a: int, name_b: int) -> None:
+    def _validate_safe_config(
+        self,
+        level: int,
+        name_a: int,
+        name_b: int,
+        *,
+        ammo_profile: int | None = None,
+        damage_profile: int | None = None,
+        health_profile: int | None = None,
+    ) -> None:
         if level < SAFE_LEVEL_MIN or level > SAFE_LEVEL_MAX:
             raise ValueError(
                 f"unsafe level: {level}. allowed range is "
@@ -1925,6 +2094,29 @@ class BleHub:
             raise ValueError(
                 f"unsafe name_b index: {name_b}. allowed range is "
                 f"{SAFE_NAME_INDEX_MIN}..{SAFE_NAME_INDEX_MAX}"
+            )
+        self._validate_optional_profile_byte(
+            label="ammo_profile",
+            value=ammo_profile,
+        )
+        self._validate_optional_profile_byte(
+            label="damage_profile",
+            value=damage_profile,
+        )
+        self._validate_optional_profile_byte(
+            label="health_profile",
+            value=health_profile,
+        )
+
+    def _validate_optional_profile_byte(
+        self, *, label: str, value: int | None
+    ) -> None:
+        if value is None:
+            return
+        if value < SAFE_PROFILE_BYTE_MIN or value > SAFE_PROFILE_BYTE_MAX:
+            raise ValueError(
+                f"unsafe {label}: {value}. allowed range is "
+                f"{SAFE_PROFILE_BYTE_MIN}..{SAFE_PROFILE_BYTE_MAX}"
             )
 
     def _validate_safe_team(self, *, slot: int, team: int) -> tuple[int, int]:
