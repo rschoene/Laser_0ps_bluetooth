@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 from contextlib import asynccontextmanager
@@ -40,6 +41,9 @@ class ConfigRequest(BaseModel):
     level: int = Field(default=1, ge=1, le=5)
     name_a: int = Field(default=0, ge=0, le=49)
     name_b: int = Field(default=0, ge=0, le=49)
+    ammo_profile: int | None = Field(default=None, ge=0, le=255)
+    damage_profile: int | None = Field(default=None, ge=0, le=255)
+    health_profile: int | None = Field(default=None, ge=0, le=255)
 
 
 class GameStartRequest(BaseModel):
@@ -182,9 +186,66 @@ async def _enable_bluetooth_host() -> dict[str, object]:
     return {"status": "ok", "attempts": attempts}
 
 
+def _parse_bluetoothctl_power(stdout: str) -> bool | None:
+    match = re.search(
+        r"^\s*Powered:\s*(yes|no)\s*$",
+        stdout,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return match.group(1).strip().lower() == "yes"
+
+
+def _parse_rfkill_blocked(stdout: str) -> bool | None:
+    soft = re.findall(r"Soft blocked:\s*(yes|no)", stdout, flags=re.IGNORECASE)
+    hard = re.findall(r"Hard blocked:\s*(yes|no)", stdout, flags=re.IGNORECASE)
+    values = [*soft, *hard]
+    if not values:
+        return None
+    return any(str(value).strip().lower() == "yes" for value in values)
+
+
+async def _bluetooth_status_host() -> dict[str, object]:
+    # Bluetooth power control endpoints are Linux-specific in this app.
+    if not sys.platform.startswith("linux"):
+        return {"supported": False, "active": True}
+
+    if shutil.which("bluetoothctl"):
+        result = await _run_host_command(("bluetoothctl", "show"), timeout=4.0)
+        if result.get("ok"):
+            power = _parse_bluetoothctl_power(str(result.get("stdout") or ""))
+            if power is not None:
+                return {"supported": True, "active": power}
+
+    if shutil.which("hciconfig"):
+        result = await _run_host_command(("hciconfig", "hci0"), timeout=4.0)
+        if result.get("ok"):
+            text = str(result.get("stdout") or "")
+            if re.search(r"\bUP\b", text, flags=re.IGNORECASE):
+                return {"supported": True, "active": True}
+            if re.search(r"\bDOWN\b", text, flags=re.IGNORECASE):
+                return {"supported": True, "active": False}
+
+    if shutil.which("rfkill"):
+        result = await _run_host_command(("rfkill", "list", "bluetooth"), timeout=4.0)
+        if result.get("ok"):
+            blocked = _parse_rfkill_blocked(str(result.get("stdout") or ""))
+            if blocked is not None:
+                return {"supported": True, "active": not blocked}
+
+    # Unknown Linux adapter state: keep the button visible so operator can trigger enable.
+    return {"supported": True, "active": False}
+
+
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, object]:
+    bluetooth_status = await _bluetooth_status_host()
+    return {
+        "status": "ok",
+        "bluetooth_supported": bool(bluetooth_status["supported"]),
+        "bluetooth_active": bool(bluetooth_status["active"]),
+    }
 
 
 @app.post("/api/server/restart")
@@ -316,6 +377,9 @@ async def write_config(request: Request, address: str, body: ConfigRequest) -> d
             level=body.level,
             name_a=body.name_a,
             name_b=body.name_b,
+            ammo_profile=body.ammo_profile,
+            damage_profile=body.damage_profile,
+            health_profile=body.health_profile,
         )
     except Exception as exc:
         raise _as_http_error(exc) from exc

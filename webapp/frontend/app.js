@@ -1,4 +1,4 @@
-const responseBox = document.getElementById("response");
+﻿const responseBox = document.getElementById("response");
 const notificationsBox = document.getElementById("notifications");
 const statusPill = document.getElementById("status-pill");
 const errorsBand = document.getElementById("errors-band");
@@ -18,6 +18,13 @@ const gameSummaryPill = document.getElementById("game-summary");
 const languageSelect = document.getElementById("language-select");
 const SLOT_MIN = 2;
 const SLOT_MAX = 5;
+const LEVEL_MIN = 1;
+const LEVEL_MAX = 5;
+const PROFILE_BYTE_MIN = 0;
+const PROFILE_BYTE_MAX = 255;
+if (enableBluetoothButton) {
+  enableBluetoothButton.classList.add("hidden");
+}
 
 const SUPPORTED_LANGUAGES = ["en", "de"];
 const DEFAULT_LANGUAGE = "en";
@@ -30,9 +37,21 @@ let translations = {
   "error.noTargetAddressSet": "No target address set.",
   "error.unknown": "Unknown error",
   "table.blasterType": "Blaster type",
+  "table.blasterConfig": "Blaster Config",
+  "table.level": "Level",
+  "table.life": "Life",
+  "table.damage": "Damage",
+  "table.profile": "Profile (HP/D/A)",
   "table.unknownType": "Unknown",
   "blasterType.alphaPoint": "AlphaPoint",
   "blasterType.deltaBurst": "DeltaBurst",
+  "button.saveLevel": "Save level",
+  "button.saveConfig": "Save config",
+  "button.resetConfig": "Reset config",
+  "label.healthProfile": "Health (0-255)",
+  "label.damageProfile": "Damage (0-255)",
+  "label.ammoProfile": "Ammo (0-255)",
+  "confirm.resetConfig": "Reset this blaster to default level/profile values?",
   "misc.empty": "-",
 };
 
@@ -360,6 +379,140 @@ function tsToClock(ts) {
   return new Date(ts * 1000).toLocaleTimeString(currentLanguage);
 }
 
+function clampInt(value, min, max, fallback = min) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function deriveLevelValue(conn) {
+  const fromSnapshot = Number(conn?.last_snapshot?.level);
+  const fromLive = Number(conn?.live_state?.startup_level);
+  if (Number.isFinite(fromSnapshot)) {
+    return clampInt(fromSnapshot, LEVEL_MIN, LEVEL_MAX, LEVEL_MIN);
+  }
+  if (Number.isFinite(fromLive)) {
+    return clampInt(fromLive, LEVEL_MIN, LEVEL_MAX, LEVEL_MIN);
+  }
+  return LEVEL_MIN;
+}
+
+function deriveConfigNameIndices(conn) {
+  const snapshot = conn?.last_snapshot || {};
+  const liveState = conn?.live_state || {};
+  const rawNameA = Number(snapshot.name_a);
+  const rawNameB = Number(snapshot.name_b);
+  const fallbackRawNameA = Number(liveState.startup_name_a);
+  const fallbackRawNameB = Number(liveState.startup_name_b);
+  const resolvedRawNameA = Number.isFinite(rawNameA) ? rawNameA : fallbackRawNameA;
+  const resolvedRawNameB = Number.isFinite(rawNameB) ? rawNameB : fallbackRawNameB;
+  return {
+    nameAIndex: clampInt(resolvedRawNameA - 1, 0, 49, 0),
+    nameBIndex: clampInt(resolvedRawNameB - 1, 0, 49, 0),
+  };
+}
+
+function extractProfileFromStartupRaw(rawHex) {
+  if (typeof rawHex !== "string") return null;
+  const clean = rawHex.trim().toLowerCase();
+  if (!/^[0-9a-f]+$/.test(clean) || clean.length < 26) return null;
+  const payload = clean.slice(0, 26);
+  const parseByte = (index) => {
+    const offset = index * 2;
+    const pair = payload.slice(offset, offset + 2);
+    if (pair.length !== 2) return null;
+    const value = Number.parseInt(pair, 16);
+    return Number.isFinite(value) ? value : null;
+  };
+  const ammo = parseByte(2);
+  const damage = parseByte(3);
+  const health = parseByte(7);
+  if (ammo == null && damage == null && health == null) return null;
+  return {
+    ammo_profile: ammo,
+    damage_profile: damage,
+    health_profile: health,
+  };
+}
+
+function defaultProfileByBlasterType(conn) {
+  const configProfile = getConfigProfileForEntry(conn);
+  const configByte7 = Number(configProfile?.byte7);
+  if (Number.isFinite(configByte7)) {
+    if (configByte7 === 1) {
+      return {
+        ammo_profile: 0x12,
+        damage_profile: 0x01,
+        health_profile: 0x0a,
+      };
+    }
+    if (configByte7 === 0) {
+      return {
+        ammo_profile: 0x0a,
+        damage_profile: 0x02,
+        health_profile: 0x0a,
+      };
+    }
+  }
+  const type = String(
+    conn?.blaster_type ||
+      conn?.last_snapshot?.blaster_type ||
+      conn?.live_state?.startup_blaster_type ||
+      ""
+  ).toLowerCase();
+  if (type === "deltaburst") {
+    return {
+      ammo_profile: 0x12,
+      damage_profile: 0x01,
+      health_profile: 0x0a,
+    };
+  }
+  return {
+    ammo_profile: 0x0a,
+    damage_profile: 0x02,
+    health_profile: 0x0a,
+  };
+}
+
+function deriveConfigProfileValues(conn) {
+  const profileFromConfigWrite = getConfigProfileForEntry(conn) || {};
+  const profileFromSnapshot = extractProfileFromStartupRaw(conn?.last_snapshot?.raw);
+  const profileFromLive = extractProfileFromStartupRaw(conn?.live_state?.startup_raw);
+  const fallback = defaultProfileByBlasterType(conn);
+
+  const ammo =
+    toFiniteNumberOrNull(profileFromConfigWrite.ammo) ??
+    toFiniteNumberOrNull(profileFromSnapshot?.ammo_profile) ??
+    toFiniteNumberOrNull(profileFromLive?.ammo_profile) ??
+    fallback.ammo_profile;
+  const damage =
+    toFiniteNumberOrNull(profileFromConfigWrite.damage) ??
+    toFiniteNumberOrNull(profileFromSnapshot?.damage_profile) ??
+    toFiniteNumberOrNull(profileFromLive?.damage_profile) ??
+    fallback.damage_profile;
+  const health =
+    toFiniteNumberOrNull(profileFromConfigWrite.health) ??
+    toFiniteNumberOrNull(profileFromSnapshot?.health_profile) ??
+    toFiniteNumberOrNull(profileFromLive?.health_profile) ??
+    fallback.health_profile;
+
+  return {
+    ammoProfile: clampInt(ammo, PROFILE_BYTE_MIN, PROFILE_BYTE_MAX, fallback.ammo_profile),
+    damageProfile: clampInt(
+      damage,
+      PROFILE_BYTE_MIN,
+      PROFILE_BYTE_MAX,
+      fallback.damage_profile
+    ),
+    healthProfile: clampInt(
+      health,
+      PROFILE_BYTE_MIN,
+      PROFILE_BYTE_MAX,
+      fallback.health_profile
+    ),
+  };
+}
+
 function normAddress(address) {
   return String(address || "").toLowerCase();
 }
@@ -424,6 +577,94 @@ function formatHexByte(value) {
   return `0x${Number(value).toString(16).padStart(2, "0")}`;
 }
 
+function formatHexByteWithDec(value) {
+  if (value == null || Number.isNaN(Number(value))) return t("misc.empty");
+  const n = Number(value);
+  return `0x${n.toString(16).padStart(2, "0")} (${n})`;
+}
+
+function toFiniteNumberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function extractConfigProfileFromDerived(derived) {
+  if (!derived || derived.msg_id !== "0x36") return null;
+  const ammo = toFiniteNumberOrNull(derived.ammo_profile);
+  const damage = toFiniteNumberOrNull(derived.damage_profile);
+  const health = toFiniteNumberOrNull(derived.health_profile);
+  if (ammo == null && damage == null && health == null) return null;
+  return {
+    family_hint: String(derived.family_hint || ""),
+    ammo,
+    damage,
+    health,
+    level: toFiniteNumberOrNull(derived.level),
+    tail: toFiniteNumberOrNull(derived.tail_profile),
+    byte7: toFiniteNumberOrNull(derived.byte7_selector),
+  };
+}
+
+function getConfigProfileForEntry(entry) {
+  if (entry?.config_profile) return entry.config_profile;
+  const key = normAddress(entry?.address);
+  if (!key) return null;
+  const fromLive = liveByAddress.get(key)?.config_profile;
+  return fromLive || null;
+}
+
+function formatCompactConfigProfile(profile) {
+  if (!profile) return null;
+  const hp = toFiniteNumberOrNull(profile.health);
+  const dmg = toFiniteNumberOrNull(profile.damage);
+  const ammo = toFiniteNumberOrNull(profile.ammo);
+  if (hp == null && dmg == null && ammo == null) return null;
+  const hpText = hp == null ? "-HP" : `${hp}HP`;
+  const dmgText = dmg == null ? "-D" : `${dmg}D`;
+  const ammoText = ammo == null ? "-A" : `${ammo}A`;
+  return `${hpText} | ${dmgText} | ${ammoText}`;
+}
+
+function renderBlasterTypeCell(entry) {
+  const ls = entry?.live_state || {};
+  const snap = entry?.last_snapshot || {};
+  const type = formatBlasterType(
+    entry?.blaster_type || ls.startup_blaster_type || snap.blaster_type
+  );
+  const { ammoProfile, damageProfile, healthProfile } = deriveConfigProfileValues(entry);
+  const compact = formatCompactConfigProfile({
+    ammo: ammoProfile,
+    damage: damageProfile,
+    health: healthProfile,
+  });
+  return (
+    `<div class="blaster-type-main">${escapeHtml(type)}</div>` +
+    `<div class="blaster-type-sub">${escapeHtml(compact)}</div>`
+  );
+}
+
+function buildConfigWriteProfileLine(packet) {
+  const derived = packet?.derived || {};
+  if (derived.msg_id !== "0x36") return null;
+  const family = String(derived.family_hint || t("table.unknownType"));
+  const level = Number.isFinite(Number(derived.level))
+    ? String(Number(derived.level))
+    : t("misc.empty");
+  const nameA = formatHexByte(derived.name_a);
+  const nameB = formatHexByte(derived.name_b);
+  return [
+    "config_profile:",
+    `family=${family}`,
+    `byte7=${formatHexByteWithDec(derived.byte7_selector)}`,
+    `ammo=${formatHexByteWithDec(derived.ammo_profile)}`,
+    `damage=${formatHexByteWithDec(derived.damage_profile)}`,
+    `health=${formatHexByteWithDec(derived.health_profile)}`,
+    `tail=${formatHexByteWithDec(derived.tail_profile)}`,
+    `level=${level}`,
+    `name=(${nameA}, ${nameB})`,
+  ].join(" ");
+}
+
 function buildBlasterDebugText(entry) {
   const ls = entry?.live_state || {};
   const snap = entry?.last_snapshot || {};
@@ -481,6 +722,10 @@ function buildPacketDebugLines(ts, address, packet, liveState) {
   lines.push(`${ts} [${safeAddress}] packet ${formatDebugValue(p.direction || "?")} raw=${formatDebugValue(p.raw)}`);
   lines.push(`decoded: ${formatDebugValue(p.decoded)}`);
   lines.push(`derived: ${formatDebugValue(p.derived)}`);
+  const configProfile = buildConfigWriteProfileLine(p);
+  if (configProfile) {
+    lines.push(configProfile);
+  }
   if (liveState != null) {
     lines.push(`live_state: ${formatDebugValue(liveState)}`);
   }
@@ -531,14 +776,10 @@ function renderLiveStatus() {
       ls.last_status_word == null
         ? t("misc.empty")
         : `0x${Number(ls.last_status_word).toString(16).padStart(4, "0")}`;
-    const blasterType = formatBlasterType(
-      item.blaster_type || ls.startup_blaster_type || item.last_snapshot?.blaster_type
-    );
-
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(displayName(item))}</td>
-      <td>${escapeHtml(blasterType)}</td>
+      <td>${renderBlasterTypeCell(item)}</td>
       <td>${escapeHtml(item.address || t("misc.empty"))}</td>
       <td>${escapeHtml(formatTeam(item.assigned_slot, item.assigned_team))}</td>
       <td>${escapeHtml(formatLinkState(item))}</td>
@@ -579,40 +820,86 @@ function renderSetupTable(connections) {
       conn.assigned_slot == null ? SLOT_MIN : Number(conn.assigned_slot);
     const teamValue = conn.assigned_team == null ? 2 : Number(conn.assigned_team);
     const localNameValue = conn.local_name || "";
-    const blasterType = formatBlasterType(
-      conn.blaster_type || conn.live_state?.startup_blaster_type || conn.last_snapshot?.blaster_type
-    );
+    const levelValue = deriveLevelValue(conn);
+    const { nameAIndex, nameBIndex } = deriveConfigNameIndices(conn);
+    const { ammoProfile, damageProfile, healthProfile } = deriveConfigProfileValues(conn);
 
     tr.innerHTML = `
-      <td><input class="setup-name-input" type="text" maxlength="32" value="${escapeHtml(localNameValue)}" placeholder="${escapeHtml(t("placeholder.localName"))}"></td>
-      <td>${escapeHtml(conn.name || t("state.unknown"))}</td>
-      <td>${escapeHtml(blasterType)}</td>
-      <td>${escapeHtml(safeAddress)}</td>
-      <td><input class="setup-slot-input" type="number" min="${SLOT_MIN}" max="${SLOT_MAX}" value="${slotValue}"></td>
       <td>
-        <select>
-          <option value="0"${teamValue === 0 ? " selected" : ""}>${escapeHtml(t("team.red"))}</option>
-          <option value="1"${teamValue === 1 ? " selected" : ""}>${escapeHtml(t("team.blue"))}</option>
-          <option value="2"${teamValue === 2 ? " selected" : ""}>${escapeHtml(t("team.violet"))}</option>
-        </select>
+        <div class="setup-cell-stack">
+          <input class="setup-name-input" type="text" maxlength="32" value="${escapeHtml(localNameValue)}" placeholder="${escapeHtml(t("placeholder.localName"))}">
+          <button type="button" class="setup-name-save setup-icon-btn" title="${escapeHtml(t("button.saveName"))}" aria-label="${escapeHtml(t("button.saveName"))}">&#128190;</button>
+        </div>
+      </td>
+      <td>${escapeHtml(conn.name || t("state.unknown"))}</td>
+      <td>${renderBlasterTypeCell(conn)}</td>
+      <td class="setup-address-cell">${escapeHtml(safeAddress)}</td>
+      <td>
+        <div class="setup-cell-stack">
+          <div class="setup-team-inline">
+            <input class="setup-slot-input" type="number" min="${SLOT_MIN}" max="${SLOT_MAX}" value="${slotValue}">
+            <select class="setup-team-select">
+              <option value="0"${teamValue === 0 ? " selected" : ""}>${escapeHtml(t("team.red"))}</option>
+              <option value="1"${teamValue === 1 ? " selected" : ""}>${escapeHtml(t("team.blue"))}</option>
+              <option value="2"${teamValue === 2 ? " selected" : ""}>${escapeHtml(t("team.violet"))}</option>
+            </select>
+          </div>
+          <button type="button" class="setup-team-save setup-icon-btn" title="${escapeHtml(t("button.saveTeam"))}" aria-label="${escapeHtml(t("button.saveTeam"))}">&#128190;</button>
+        </div>
       </td>
       <td>
-        <button type="button" class="setup-name-save">${escapeHtml(t("button.saveName"))}</button>
-        <button type="button" class="setup-team-save">${escapeHtml(t("button.saveTeam"))}</button>
+        <div class="setup-cell-stack setup-config-cell">
+          <table class="setup-config-table" aria-label="${escapeHtml(t("table.blasterConfig"))}">
+            <thead>
+              <tr>
+                <th>${escapeHtml(t("table.level"))}</th>
+                <th>${escapeHtml(t("table.life"))}</th>
+                <th>${escapeHtml(t("table.damage"))}</th>
+                <th>${escapeHtml(t("table.ammo"))}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <select class="setup-level-select">
+                    <option value="1"${levelValue === 1 ? " selected" : ""}>1</option>
+                    <option value="2"${levelValue === 2 ? " selected" : ""}>2</option>
+                    <option value="3"${levelValue === 3 ? " selected" : ""}>3</option>
+                    <option value="4"${levelValue === 4 ? " selected" : ""}>4</option>
+                    <option value="5"${levelValue === 5 ? " selected" : ""}>5</option>
+                  </select>
+                </td>
+                <td><input class="setup-health-input" type="number" min="${PROFILE_BYTE_MIN}" max="${PROFILE_BYTE_MAX}" value="${healthProfile}" title="${escapeHtml(t("label.healthProfile"))}"></td>
+                <td><input class="setup-damage-input" type="number" min="${PROFILE_BYTE_MIN}" max="${PROFILE_BYTE_MAX}" value="${damageProfile}" title="${escapeHtml(t("label.damageProfile"))}"></td>
+                <td><input class="setup-ammo-input" type="number" min="${PROFILE_BYTE_MIN}" max="${PROFILE_BYTE_MAX}" value="${ammoProfile}" title="${escapeHtml(t("label.ammoProfile"))}"></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="setup-icon-row">
+            <button type="button" class="setup-config-save setup-icon-btn" title="${escapeHtml(t("button.saveConfig"))}" aria-label="${escapeHtml(t("button.saveConfig"))}">&#128190;</button>
+            <button type="button" class="setup-config-reset setup-icon-btn setup-icon-btn-danger" title="${escapeHtml(t("button.resetConfig"))}" aria-label="${escapeHtml(t("button.resetConfig"))}">&#9851;</button>
+          </div>
+        </div>
       </td>
     `;
 
     const nameInput = tr.querySelector(".setup-name-input");
     const slotInput = tr.querySelector(".setup-slot-input");
-    const teamSelect = tr.querySelector("select");
+    const teamSelect = tr.querySelector(".setup-team-select");
+    const levelSelect = tr.querySelector(".setup-level-select");
+    const healthInput = tr.querySelector(".setup-health-input");
+    const damageInput = tr.querySelector(".setup-damage-input");
+    const ammoInput = tr.querySelector(".setup-ammo-input");
     const saveNameButton = tr.querySelector(".setup-name-save");
     const saveTeamButton = tr.querySelector(".setup-team-save");
+    const saveConfigButton = tr.querySelector(".setup-config-save");
+    const resetConfigButton = tr.querySelector(".setup-config-reset");
 
     saveNameButton.addEventListener("click", (event) => {
       event.stopPropagation();
       runAction(
         () => setLocalNameForAddress(safeAddress, nameInput.value),
-        { button: saveNameButton, busyText: t("button.saving") }
+        { button: saveNameButton, busyText: "..." }
       );
     });
 
@@ -622,7 +909,53 @@ function renderSetupTable(connections) {
       const team = Number(teamSelect.value);
       runAction(
         () => setTeamProfileByAddress(safeAddress, slot, team),
-        { button: saveTeamButton, busyText: t("button.saving") }
+        { button: saveTeamButton, busyText: "..." }
+      );
+    });
+
+    saveConfigButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const level = Number(levelSelect.value);
+      const profileOverrides = {
+        health_profile: Number(healthInput.value),
+        damage_profile: Number(damageInput.value),
+        ammo_profile: Number(ammoInput.value),
+      };
+      runAction(
+        () =>
+          setLevelByAddress(
+            safeAddress,
+            level,
+            nameAIndex,
+            nameBIndex,
+            profileOverrides
+          ),
+        { button: saveConfigButton, busyText: "..." }
+      );
+    });
+
+    resetConfigButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const confirmed = window.confirm(t("confirm.resetConfig"));
+      if (!confirmed) return;
+      const resetLevel = LEVEL_MIN;
+      const resetProfile = defaultProfileByBlasterType(conn);
+      runAction(
+        async () => {
+          const result = await setLevelByAddress(
+            safeAddress,
+            resetLevel,
+            nameAIndex,
+            nameBIndex,
+            resetProfile
+          );
+          levelSelect.value = String(resetLevel);
+          healthInput.value = String(resetProfile.health_profile);
+          damageInput.value = String(resetProfile.damage_profile);
+          ammoInput.value = String(resetProfile.ammo_profile);
+          return result;
+        },
+        { button: resetConfigButton, busyText: "..." }
       );
     });
 
@@ -790,13 +1123,10 @@ function renderConnections(connections) {
     (a.address || "").localeCompare(b.address || "")
   );
   for (const conn of sorted) {
-    const blasterType = formatBlasterType(
-      conn.blaster_type || conn.live_state?.startup_blaster_type || conn.last_snapshot?.blaster_type
-    );
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(conn.display_name || conn.local_name || conn.name || t("state.unknown"))}</td>
-      <td>${escapeHtml(blasterType)}</td>
+      <td>${renderBlasterTypeCell(conn)}</td>
       <td>${escapeHtml(conn.address)}</td>
       <td>${escapeHtml(formatTeam(conn.assigned_slot, conn.assigned_team))}</td>
       <td>${escapeHtml(formatLinkState(conn))}</td>
@@ -828,7 +1158,6 @@ function renderConnections(connections) {
 
 function handleLiveSnapshot(snapshot) {
   const conns = snapshot?.connections || [];
-  liveByAddress.clear();
   applyConnectionList(conns);
 }
 
@@ -966,12 +1295,16 @@ function handleLiveEvent(eventEnvelope) {
   if (eventType === "tx_packet") {
     if (payload.address) {
       const existing = liveByAddress.get(normAddress(payload.address)) || {};
+      const configProfile = extractConfigProfileFromDerived(
+        payload.packet?.derived || null
+      );
       upsertLiveEntry({
         address: payload.address,
         name: payload.name || existing.name,
         local_name: payload.local_name ?? existing.local_name ?? null,
         display_name: payload.display_name ?? existing.display_name ?? null,
         live_state: payload.live_state || existing.live_state || {},
+        ...(configProfile ? { config_profile: configProfile } : {}),
       });
       renderLiveStatus();
     }
@@ -1052,12 +1385,23 @@ function handleLiveEvent(eventEnvelope) {
 
 async function refreshHealth() {
   try {
-    await api("/api/health");
+    const health = await api("/api/health");
     setStatus(t("status.apiReachable"), true);
+    setBluetoothEnableButtonVisibility(health);
+    return health;
   } catch (err) {
     setStatus(t("status.apiUnreachable"), false);
+    setBluetoothEnableButtonVisibility(null);
     reportError(err, { contextKey: "context.apiHealthcheck", dedupeMs: 15000 });
   }
+}
+
+function setBluetoothEnableButtonVisibility(health) {
+  if (!enableBluetoothButton) return;
+  const supported = health?.bluetooth_supported === true;
+  const active = health?.bluetooth_active === true;
+  const shouldShow = supported && !active;
+  enableBluetoothButton.classList.toggle("hidden", !shouldShow);
 }
 
 function openLiveStream() {
@@ -1303,6 +1647,50 @@ async function setTeamProfileByAddress(address, slot, team) {
   return result;
 }
 
+async function setLevelByAddress(
+  address,
+  level,
+  nameA,
+  nameB,
+  profileOverrides = null
+) {
+  const body = {
+    level: clampInt(level, LEVEL_MIN, LEVEL_MAX, LEVEL_MIN),
+    name_a: clampInt(nameA, 0, 49, 0),
+    name_b: clampInt(nameB, 0, 49, 0),
+  };
+  if (profileOverrides && typeof profileOverrides === "object") {
+    const ammo = Number(profileOverrides.ammo_profile);
+    const damage = Number(profileOverrides.damage_profile);
+    const health = Number(profileOverrides.health_profile);
+    if (Number.isFinite(ammo)) {
+      body.ammo_profile = clampInt(ammo, PROFILE_BYTE_MIN, PROFILE_BYTE_MAX, PROFILE_BYTE_MIN);
+    }
+    if (Number.isFinite(damage)) {
+      body.damage_profile = clampInt(
+        damage,
+        PROFILE_BYTE_MIN,
+        PROFILE_BYTE_MAX,
+        PROFILE_BYTE_MIN
+      );
+    }
+    if (Number.isFinite(health)) {
+      body.health_profile = clampInt(
+        health,
+        PROFILE_BYTE_MIN,
+        PROFILE_BYTE_MAX,
+        PROFILE_BYTE_MIN
+      );
+    }
+  }
+  const result = await api(`/api/config/${encodeURIComponent(address)}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  await refreshConnections();
+  return result;
+}
+
 async function setTeamProfile() {
   const address = mustTargetAddress();
   const slot = Number(document.getElementById("team-slot").value);
@@ -1523,7 +1911,11 @@ if (scanButton) {
 }
 if (enableBluetoothButton) {
   enableBluetoothButton.addEventListener("click", () => {
-    runAction(enableBluetooth, {
+    runAction(async () => {
+      const result = await enableBluetooth();
+      await refreshHealth();
+      return result;
+    }, {
       button: enableBluetoothButton,
       busyText: t("button.enablingBluetooth"),
       contextKey: "context.bluetoothControl",
@@ -1655,3 +2047,5 @@ bootstrap().catch((err) => {
 window.addEventListener("beforeunload", () => {
   if (liveSource) liveSource.close();
 });
+
+
